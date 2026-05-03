@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>Data Nexus 2.6 - Integrated Governance & Topology</title>
+    <style>
+        :root {
+            --primary: #2563eb; --secondary: #64748b; --success: #10b981; --warning: #f59e0b; --danger: #ef4444;
+            --bg: #f1f5f9; --sidebar: #0f172a; --panel: #ffffff; --border: #e2e8f0;
+        }
+        body { font-family: 'Inter', sans-serif; margin: 0; display: flex; height: 100vh; background: var(--bg); color: #1e293b; overflow: hidden; }
+        
+        /* Sidebar */
+        nav { width: 260px; background: var(--sidebar); color: white; display: flex; flex-direction: column; flex-shrink: 0; }
+        nav .logo { padding: 30px 20px; font-size: 20px; font-weight: bold; color: var(--primary); border-bottom: 1px solid #1e293b; }
+        nav .nav-item { padding: 15px 25px; cursor: pointer; color: #94a3b8; transition: 0.2s; display: flex; align-items: center; gap: 10px; border-left: 4px solid transparent; }
+        nav .nav-item:hover { background: #1e293b; color: white; }
+        nav .nav-item.active { background: #1e293b; color: white; border-left-color: var(--primary); }
+
+        main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .view-section { display: none; flex: 1; flex-direction: column; overflow-y: auto; padding: 30px; }
+        .view-section.active { display: flex; }
+
+        /* Governance Workflow */
+        .stepper { display: flex; gap: 20px; margin-bottom: 25px; background: white; padding: 15px; border-radius: 8px; border: 1px solid var(--border); }
+        .step { font-size: 13px; color: var(--secondary); display: flex; align-items: center; gap: 5px; }
+        .step.active { color: var(--primary); font-weight: bold; }
+
+        /* UI Components */
+        .card { background: white; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .card-header { padding: 15px 25px; border-bottom: 1px solid var(--border); font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+        .card-body { padding: 20px; }
+        
+        /* Topology Canvas */
+        .topo-container { position: relative; height: 500px; background: white; border-radius: 12px; border: 1px solid var(--border); overflow: hidden; }
+        .topo-canvas { width: 100%; height: 100%; position: relative; background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 30px 30px; }
+        .node { position: absolute; padding: 12px; background: white; border: 2px solid var(--primary); border-radius: 8px; font-size: 12px; min-width: 140px; z-index: 2; cursor: pointer; }
+        .node.ref { border-color: var(--success); background: #f0fdf4; }
+        .node:hover { box-shadow: 0 0 10px rgba(37, 99, 235, 0.3); }
+        
+        .edge-label { position: absolute; background: white; padding: 2px 8px; border: 1px solid var(--border); border-radius: 10px; font-size: 11px; font-weight: bold; color: var(--primary); z-index: 3; }
+        svg.links { position: absolute; top:0; left:0; width:100%; height:100%; pointer-events: none; }
+
+        /* Editor */
+        .editor { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 6px; font-family: monospace; font-size: 13px; min-height: 150px; }
+        .btn { padding: 10px 20px; border-radius: 6px; border: none; font-weight: bold; cursor: pointer; }
+        .btn-primary { background: var(--primary); color: white; }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="logo">DATA NEXUS PRO</div>
+    <div class="nav-item active" onclick="showView('governance')">合約治理中心</div>
+    <div class="nav-item" onclick="showView('topology')">營運拓樸看板</div>
+    <div class="nav-item" onclick="showView('ref-points')">全域參考點管理</div>
+    <div class="nav-item" onclick="showView('templates')">樣板庫管理</div>
+</nav>
+
+<main>
+    <!-- 1. 合約治理中心 -->
+    <div id="view-governance" class="view-section active">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+            <h2>合約治理中心</h2>
+            <button class="btn btn-primary" onclick="publishContract()">發布合約 v1.0.0</button>
+        </div>
+
+        <div class="stepper">
+            <div class="step active" id="st1">1. 樣板與參考點</div>
+            <div class="step" id="st2">2. Schema 解析</div>
+            <div class="step" id="st3">3. Binding 邏輯</div>
+        </div>
+
+        <!-- Step 1 Content -->
+        <div id="gov-step-1" class="card">
+            <div class="card-header">合約基礎宣告</div>
+            <div class="card-body">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div>
+                        <label>選用樣板</label>
+                        <select style="width:100%; padding:10px; margin-top:5px;">
+                            <option>Equipment_Standard_v1.0</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>參考基準點 (Reference Point)</label>
+                        <select style="width:100%; padding:10px; margin-top:5px;">
+                            <option>MES_Operation_Complete</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="margin-top:20px;">
+                    <label>SLA 延遲定義 (T + Offset)</label>
+                    <input type="text" id="offset-input" value="10" style="width:100px; padding:8px;"> 分鐘
+                    <p style="font-size:12px; color:var(--secondary);">* 此資訊將同步至拓樸看板，用於監控資料對齊延遲。</p>
+                </div>
+                <div style="border: 2px dashed var(--border); padding: 30px; text-align: center; border-radius: 8px; margin-top:20px; cursor:pointer;" onclick="nextStep(2)">
+                    點擊上傳 Sample Data 進行 Schema 推論
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 2 & 3 (Hidden initially) -->
+        <div id="gov-step-2" class="card" style="display:none;">
+            <div class="card-header">Schema 推論結果</div>
+            <div class="card-body">
+                <p>已自動偵測 5 個欄位。其中 <code>timestamp</code> 已自動對齊為 DateTime。</p>
+                <button class="btn btn-primary" onclick="nextStep(3)">確認 Schema 並撰寫腳本</button>
+            </div>
+        </div>
+
+        <div id="gov-step-3" class="card" style="display:none;">
+            <div class="card-header">Binding Script (Python)</div>
+            <div class="card-body">
+                <div class="editor">
+                    def align(row, platform):<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;ref = platform.find_ref("MES_Operation_Complete", row['tool_id'])<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;return row.bind(ref)
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. 營運拓樸看板 -->
+    <div id="view-topology" class="view-section">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+            <h2>營運拓樸看板</h2>
+            <span class="tag" style="background:#dbeafe; color:var(--primary);">基準：MES_Operation_Complete</span>
+        </div>
+        
+        <div class="topo-container">
+            <div class="topo-canvas">
+                <svg class="links">
+                    <defs>
+                        <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+                            <path d="M0,0 L0,6 L9,3 z" fill="#cbd5e1" />
+                        </marker>
+                    </defs>
+                    <!-- 連線 -->
+                    <line x1="150" y1="250" x2="400" y2="150" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow)" />
+                    <line x1="150" y1="250" x2="400" y2="350" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow)" />
+                </svg>
+                
+                <!-- 延遲資訊標籤 -->
+                <div class="edge-label" style="top: 185px; left: 250px;">T + <span id="topo-offset-val">10</span>m</div>
+                <div class="edge-label" style="top: 300px; left: 250px;">T + 15m</div>
+
+                <!-- 基準點節點 -->
+                <div class="node ref" style="top: 220px; left: 40px;">
+                    <strong>MES_Operation</strong><br>
+                    <small>REF: BASELINE</small>
+                </div>
+
+                <!-- 合約節點 -->
+                <div class="node" style="top: 120px; left: 410px;">
+                    <strong>APC_Chamber_A</strong><br>
+                    <small>Version: v1.0.0</small><br>
+                    <span style="color:var(--success)">● Active</span>
+                </div>
+
+                <div class="node" style="top: 320px; left: 410px;">
+                    <strong>SPC_Data_Flow</strong><br>
+                    <small>Version: v2.1.0</small><br>
+                    <span style="color:var(--success)">● Active</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 其他 Section (簡易示意) -->
+    <div id="view-ref-points" class="view-section"><h2>全域參考點管理</h2><p>管理平台級別的數據錨點...</p></div>
+    <div id="view-templates" class="view-section"><h2>樣板庫管理</h2><p>定義合約的 JSON 框架與 Slot...</p></div>
+</main>
+
+<script>
+    function showView(viewId) {
+        document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+        const activeNav = Array.from(document.querySelectorAll('.nav-item')).find(el => el.getAttribute('onclick').includes(viewId));
+        if(activeNav) activeNav.classList.add('active');
+
+        document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+        document.getElementById('view-' + viewId).classList.add('active');
+        
+        // 切換到拓樸時同步 Offset 值
+        if(viewId === 'topology') {
+            const offset = document.getElementById('offset-input').value;
+            document.getElementById('topo-offset-val').innerText = offset;
+        }
+    }
+
+    function nextStep(stepNum) {
+        if(stepNum === 2) {
+            document.getElementById('gov-step-2').style.display = 'block';
+            document.getElementById('st2').classList.add('active');
+        } else if(stepNum === 3) {
+            document.getElementById('gov-step-3').style.display = 'block';
+            document.getElementById('st3').classList.add('active');
+        }
+    }
+
+    function publishContract() {
+        const offset = document.getElementById('offset-input').value;
+        alert(`合約發布成功！\nSLA Offset: T + ${offset} 分鐘\n已同步至全域拓樸看板。`);
+        showView('topology');
+    }
+</script>
+
+</body>
+</html>

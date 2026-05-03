@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>Data Nexus Governance Platform v2.0</title>
+    <style>
+        :root {
+            --primary: #2563eb; --secondary: #64748b; --success: #10b981; --warning: #f59e0b;
+            --bg: #f1f5f9; --sidebar: #0f172a; --panel: #ffffff; --border: #e2e8f0;
+        }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; display: flex; height: 100vh; background: var(--bg); color: #1e293b; }
+        
+        /* Sidebar */
+        nav { width: 260px; background: var(--sidebar); color: white; display: flex; flex-direction: column; flex-shrink: 0; }
+        nav .logo { padding: 30px 20px; font-size: 20px; font-weight: bold; letter-spacing: 1px; color: var(--primary); border-bottom: 1px solid #1e293b; }
+        nav .nav-item { padding: 15px 25px; cursor: pointer; color: #94a3b8; transition: 0.2s; display: flex; align-items: center; gap: 10px; }
+        nav .nav-item:hover { background: #1e293b; color: white; }
+        nav .nav-item.active { background: #1e293b; color: white; border-left: 4px solid var(--primary); }
+
+        main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .top-bar { height: 60px; background: white; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 30px; }
+        
+        /* Workflow Stepper */
+        .stepper { display: flex; justify-content: center; padding: 20px; background: white; border-bottom: 1px solid var(--border); gap: 40px; }
+        .step { display: flex; align-items: center; gap: 8px; color: var(--secondary); font-size: 14px; font-weight: 500; }
+        .step.active { color: var(--primary); }
+        .step.active .circle { background: var(--primary); color: white; }
+        .circle { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 12px; }
+
+        .container { flex: 1; padding: 30px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; }
+        .card { background: white; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card-header { padding: 15px 25px; border-bottom: 1px solid var(--border); font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+        .card-body { padding: 25px; }
+
+        /* Form Elements */
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 600; color: #475569; }
+        select, input, textarea { width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; box-sizing: border-box; }
+        
+        /* Schema Table */
+        .schema-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .schema-table th, .schema-table td { text-align: left; padding: 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+        .schema-table th { background: #f8fafc; color: #64748b; }
+        .tag { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+        .tag-auto { background: #dcfce7; color: #15803d; } /* Green */
+        .tag-manual { background: #fef9c3; color: #854d0e; } /* Yellow */
+
+        /* Code Editor Mockup */
+        .editor { background: #1e1e1e; color: #d4d4d4; padding: 20px; border-radius: 8px; font-family: 'Consolas', monospace; font-size: 14px; line-height: 1.6; min-height: 200px; }
+        .keyword { color: #569cd6; }
+        .function { color: #dcdcaa; }
+        .string { color: #ce9178; }
+
+        .btn { padding: 10px 20px; border-radius: 6px; border: none; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-outline { background: white; border: 1px solid var(--primary); color: var(--primary); }
+
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="logo">DATA NEXUS PRO</div>
+    <div class="nav-item active">合約治理中心</div>
+    <div class="nav-item">全域參考點管理</div>
+    <div class="nav-item">樣板庫管理</div>
+    <div class="nav-item">營運拓樸看板</div>
+</nav>
+
+<main>
+    <div class="top-bar">
+        <div><strong>建立新合約</strong> <span style="color: #94a3b8; font-size: 12px; margin-left: 10px;">ID: CT-2026-0503-001</span></div>
+        <div style="display: flex; gap: 10px;">
+            <button class="btn btn-outline" style="font-size: 12px;">儲存草稿</button>
+            <button class="btn btn-primary" style="font-size: 12px;">發布合約 v1.0.0</button>
+        </div>
+    </div>
+
+    <!-- Stepper -->
+    <div class="stepper">
+        <div class="step active"><div class="circle">1</div> 樣板與參考點</div>
+        <div class="step" id="step-2-label"><div class="circle">2</div> Schema 解析</div>
+        <div class="step" id="step-3-label"><div class="circle">3</div> Binding 邏輯撰寫</div>
+    </div>
+
+    <div class="container">
+        
+        <!-- Section 1: Template & Ref -->
+        <div id="section-1" class="card">
+            <div class="card-header">基礎設定 (由平台樣板驅動)</div>
+            <div class="card-body">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
+                    <div class="form-group">
+                        <label>選擇合約樣板</label>
+                        <select>
+                            <option>半導體設備生產資料樣板 (Standard)</option>
+                            <option>環境感測器資料樣板</option>
+                            <option>品質檢驗 (Manual Check) 樣板</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>全域參考點 (Reference Point)</label>
+                        <select id="ref-point">
+                            <option value="mes">MES_Operation_Complete (基準 T=0)</option>
+                            <option value="none">無參考點 (孤島模式)</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>上傳驗證資料 (Sample Data)</label>
+                    <div style="border: 2px dashed var(--border); padding: 40px; text-align: center; border-radius: 8px; cursor: pointer;" onclick="analyzeData()">
+                        <span id="upload-text">點擊或拖放 CSV/JSON 檔案以分析 Schema</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 2: Dynamic Schema (Hidden until upload) -->
+        <div id="section-2" class="card hidden">
+            <div class="card-header">
+                自動偵測之 Schema
+                <span class="tag tag-auto">Auto-Generated</span>
+            </div>
+            <div class="card-body">
+                <p style="font-size: 13px; color: #64748b;">平台已根據 Sample Data 自動推論欄位型態，您可以手動調整：</p>
+                <table class="schema-table">
+                    <thead>
+                        <tr><th>欄位名稱</th><th>原始資料範例</th><th>資料型態</th><th>格式/備註</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>timestamp</strong></td>
+                            <td>2026-05-03 23:30:00</td>
+                            <td><select style="width: 120px;"><option>DateTime</option><option>String</option></select></td>
+                            <td><input type="text" value="yyyy-MM-dd HH:mm:ss"></td>
+                        </tr>
+                        <tr>
+                            <td><strong>chamber_id</strong></td>
+                            <td>CHB_01</td>
+                            <td><select style="width: 120px;"><option>String</option></select></td>
+                            <td>-</td>
+                        </tr>
+                        <tr>
+                            <td><strong>pressure</strong></td>
+                            <td>101.325</td>
+                            <td><select style="width: 120px;"><option>Float</option><option>Double</option></select></td>
+                            <td><span class="tag tag-manual">手動微調</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div style="margin-top: 20px; text-align: right;">
+                    <button class="btn btn-primary" onclick="goToStep3()">下一步：撰寫 Binding 邏輯</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 3: Binding Script -->
+        <div id="section-3" class="card hidden">
+            <div class="card-header">Binding Script 工作台 (Python 3)</div>
+            <div class="card-body">
+                <div style="display: grid; grid-template-columns: 1fr 300px; gap: 20px;">
+                    <div class="editor">
+                        <span class="keyword">def</span> <span class="function">on_data_ingest</span>(current_row, platform):<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #6a9955;"># 平台已選定參考點: MES_Operation_Complete</span><br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;query = {<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="string">"chamber"</span>: current_row[<span class="string">'chamber_id'</span>],<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="string">"time"</span>: current_row[<span class="string">'timestamp'</span>]<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;}<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;mes_ref = platform.find_ref(<span class="string">"MES_Operation_Complete"</span>, query)<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;<span class="keyword">if</span> mes_ref:<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current_row[<span class="string">'trace_id'</span>] = mes_ref[<span class="string">'order_id'</span>]<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;<span class="keyword">return</span> current_row
+                    </div>
+                    <div style="background: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid var(--border);">
+                        <h4 style="margin-top:0">驗證 Console</h4>
+                        <div style="font-size: 12px; font-family: monospace; color: #475569;">
+                            [11:30:05] 初始化 GraalVM...<br>
+                            [11:30:06] 載入 Sample Data (3 rows)...<br>
+                            [11:30:06] <span style="color: var(--success);">Row 1: 成功綁定至 PO_9982</span><br>
+                            [11:30:06] <span style="color: var(--success);">Row 2: 成功綁定至 PO_9982</span><br>
+                            [11:30:06] <span style="color: var(--warning);">Row 3: 無對應參考點 (未鏈結)</span><br>
+                            <hr>
+                            <strong>測試結果: 成功率 66%</strong>
+                        </div>
+                        <button class="btn btn-primary" style="width: 100%; margin-top: 20px;">執行模擬測試</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</main>
+
+<script>
+    function analyzeData() {
+        document.getElementById('upload-text').innerHTML = "⌛ 正在解析數據並產生 Schema...";
+        setTimeout(() => {
+            document.getElementById('section-2').classList.remove('hidden');
+            document.getElementById('step-2-label').classList.add('active');
+            document.getElementById('upload-text').innerHTML = "✅ apc_sample_data.csv (解析完成)";
+            document.getElementById('section-2').scrollIntoView({ behavior: 'smooth' });
+        }, 1500);
+    }
+
+    function goToStep3() {
+        document.getElementById('section-3').classList.remove('hidden');
+        document.getElementById('step-3-label').classList.add('active');
+        document.getElementById('section-3').scrollIntoView({ behavior: 'smooth' });
+    }
+</script>
+
+</body>
+</html>

@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Nexus Platform - Prototype</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --bg: #f8fafc;
+            --card-bg: #ffffff;
+            --text-main: #1e293b;
+            --border: #e2e8f0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            background-color: var(--bg);
+            color: var(--text-main);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* 側邊欄導覽 */
+        nav {
+            width: 240px;
+            background: #1e293b;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            padding: 20px 0;
+        }
+
+        nav .logo {
+            padding: 0 20px 20px;
+            font-size: 20px;
+            font-weight: bold;
+            border-bottom: 1px solid #334155;
+            margin-bottom: 20px;
+        }
+
+        nav button {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            padding: 15px 20px;
+            text-align: left;
+            cursor: pointer;
+            font-size: 14px;
+            width: 100%;
+        }
+
+        nav button.active {
+            background: #334155;
+            color: white;
+            border-left: 4px solid var(--primary);
+        }
+
+        /* 主內容區 */
+        main {
+            flex: 1;
+            overflow-y: auto;
+            padding: 30px;
+            position: relative;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .user-info {
+            font-size: 14px;
+            color: #64748b;
+        }
+
+        /* 時間軸看板樣式 */
+        .timeline-container {
+            background: var(--card-bg);
+            padding: 40px 20px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            position: relative;
+            min-height: 400px;
+            overflow-x: auto;
+        }
+
+        .t-zero-line {
+            position: absolute;
+            left: 150px;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: var(--primary);
+            z-index: 1;
+        }
+
+        .t-zero-label {
+            position: absolute;
+            left: 110px;
+            top: 10px;
+            font-weight: bold;
+            color: var(--primary);
+            background: var(--bg);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 2;
+        }
+
+        .contract-card {
+            background: white;
+            border: 1px solid var(--border);
+            border-left: 5px solid var(--success);
+            padding: 12px;
+            width: 200px;
+            border-radius: 8px;
+            position: absolute;
+            cursor: pointer;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            transition: transform 0.2s;
+        }
+
+        .contract-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+        }
+
+        .contract-card.warning { border-left-color: var(--warning); }
+        .contract-card.danger { border-left-color: var(--danger); }
+
+        .contract-card h4 { margin: 0 0 8px 0; font-size: 14px; }
+        .contract-card p { margin: 0; font-size: 12px; color: #64748b; }
+
+        /* 側邊細節抽屜 */
+        .drawer {
+            position: fixed;
+            right: -500px;
+            top: 0;
+            width: 450px;
+            height: 100%;
+            background: white;
+            box-shadow: -5px 0 15px rgba(0,0,0,0.1);
+            transition: right 0.3s ease;
+            z-index: 100;
+            padding: 30px;
+            overflow-y: auto;
+        }
+
+        .drawer.open { right: 0; }
+
+        .drawer h2 { margin-top: 0; border-bottom: 2px solid var(--bg); padding-bottom: 10px; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            margin-top: 15px;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th { background: var(--bg); }
+
+        .hidden { display: none; }
+
+        /* 表單樣式 */
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 14px; }
+        input, select, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        .btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="logo">Data Nexus</div>
+    <button class="active" onclick="showSection('dashboard')">營運時間軸看板</button>
+    <button onclick="showSection('provider')">Data Provider 配置</button>
+    <button onclick="showSection('iaas')">IaaS 資源定義</button>
+    <button onclick="showSection('admin')">Platform 後台</button>
+</nav>
+
+<main>
+    <div class="header">
+        <h1 id="page-title">營運時間軸看板</h1>
+        <div class="user-info">
+            <span id="role-tag">Role: Platform Owner</span> | 
+            <span>User: yc_admin (Keycloak)</span>
+        </div>
+    </div>
+
+    <!-- 看板 Section -->
+    <div id="section-dashboard">
+        <div style="margin-bottom: 20px;">
+            <label>基準事件參照點：</label>
+            <select style="width: 300px;">
+                <option>Operation_Complete_Event (工廠報工完成)</option>
+                <option>Order_Placed_Event (訂單成立)</option>
+            </select>
+        </div>
+
+        <div class="timeline-container">
+            <div class="t-zero-line"></div>
+            <div class="t-zero-label">T=0基準點</div>
+            
+            <!-- Mock Cards -->
+            <div class="contract-card" style="left: 200px; top: 100px;" onclick="openDrawer('即時生產日誌', '30s', 'Green')">
+                <h4>即時生產日誌 (MES)</h4>
+                <p>Offset: T + 30s</p>
+                <p>Status: 符合預期</p>
+            </div>
+
+            <div class="contract-card warning" style="left: 450px; top: 180px;" onclick="openDrawer('物料耗用異動', '15m', 'Yellow')">
+                <h4>物料耗用異動 (Inv)</h4>
+                <p>Offset: T + 15m</p>
+                <p>Status: 延遲警告</p>
+            </div>
+
+            <div class="contract-card" style="left: 700px; top: 100px;" onclick="openDrawer('生產成本核算', '2h', 'Green')">
+                <h4>生產成本核算 (Fin)</h4>
+                <p>Offset: T + 2h</p>
+                <p>Status: 符合預期</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Provider Section -->
+    <div id="section-provider" class="hidden">
+        <div class="timeline-container" style="padding: 20px;">
+            <h2>建立資料合約 (Data Spec)</h2>
+            <div class="form-group">
+                <label>合約名稱</label>
+                <input type="text" placeholder="例如：設備溫度感測流">
+            </div>
+            <div class="form-group">
+                <label>關聯基準點</label>
+                <select>
+                    <option>Operation_Complete_Event</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>期望落地時間 (Offset)</label>
+                <input type="text" placeholder="例如：30s 或 1h">
+            </div>
+            <div class="form-group">
+                <label>上傳 Sample Data (CSV/JSON)</label>
+                <input type="file">
+            </div>
+            <button class="btn">提交合約審核</button>
+        </div>
+    </div>
+
+    <!-- IaaS Section -->
+    <div id="section-iaas" class="hidden">
+        <h2>IaaS 資源目錄管理</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>引擎</th>
+                    <th>效能層級</th>
+                    <th>單位成本 (GB/月)</th>
+                    <th>當前水位</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Apache Doris</td><td>Gold (Real-time)</td><td>$0.50</td><td>65%</td></tr>
+                <tr><td>Apache Iceberg</td><td>Silver (Batch)</td><td>$0.05</td><td>22%</td></tr>
+                <tr><td>HBase</td><td>NoSQL (KV)</td><td>$0.15</td><td>40%</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Admin Section -->
+    <div id="section-admin" class="hidden">
+        <h2>平台使用狀況追蹤</h2>
+        <div style="display: flex; gap: 20px;">
+            <div style="flex: 1; background: #fff; padding: 20px; border-radius: 8px; border: 1px solid var(--border);">
+                <h3>熱門合約 TOP 3</h3>
+                <ul>
+                    <li>即時生產日誌 (12,400 次查詢/日)</li>
+                    <li>物料耗用異動 (8,200 次查詢/日)</li>
+                </ul>
+            </div>
+            <div style="flex: 1; background: #fff; padding: 20px; border-radius: 8px; border: 1px solid var(--border);">
+                <h3>API 成功率</h3>
+                <h1 style="color: var(--success);">99.98%</h1>
+            </div>
+        </div>
+    </div>
+</main>
+
+<!-- 細節抽屜 -->
+<div id="drawer" class="drawer">
+    <button onclick="closeDrawer()" style="float: right;">關閉</button>
+    <h2 id="drawer-title">合約細節</h2>
+    
+    <div class="form-group">
+        <label>SLA 狀態</label>
+        <span id="drawer-status">良好</span>
+    </div>
+
+    <div class="form-group">
+        <label>落地目標時間 (Relative)</label>
+        <p id="drawer-offset">T + 30s</p>
+    </div>
+
+    <h3>Sample Data Preview</h3>
+    <table id="sample-table">
+        <thead>
+            <tr>
+                <th>event_id</th>
+                <th>timestamp</th>
+                <th>status</th>
+                <th>value</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>EV-001</td>
+                <td>2026-05-02 09:00:01</td>
+                <td>COMPLETED</td>
+                <td>88.5</td>
+            </tr>
+            <tr>
+                <td>EV-002</td>
+                <td>2026-05-02 09:00:05</td>
+                <td>COMPLETED</td>
+                <td>92.1</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div style="margin-top: 30px;">
+        <button class="btn">訂閱此資料源</button>
+    </div>
+</div>
+
+<script>
+    function showSection(sectionId) {
+        // 切換導覽標籤顏色
+        document.querySelectorAll('nav button').forEach(btn => btn.classList.remove('active'));
+        event.target.classList.add('active');
+
+        // 切換內容
+        document.getElementById('section-dashboard').classList.add('hidden');
+        document.getElementById('section-provider').classList.add('hidden');
+        document.getElementById('section-iaas').classList.add('hidden');
+        document.getElementById('section-admin').classList.add('hidden');
+
+        const activeSection = document.getElementById('section-' + sectionId);
+        activeSection.classList.remove('hidden');
+        
+        // 更新標題
+        const titles = {
+            'dashboard': '營運時間軸看板',
+            'provider': 'Data Provider 配置中心',
+            'iaas': 'IaaS 資源定義管理',
+            'admin': 'Platform 後台運作監控'
+        };
+        document.getElementById('page-title').innerText = titles[sectionId];
+    }
+
+    function openDrawer(title, offset, statusColor) {
+        document.getElementById('drawer-title').innerText = title;
+        document.getElementById('drawer-offset').innerText = '基準事件後 ' + offset;
+        document.getElementById('drawer-status').innerText = (statusColor === 'Green') ? '正常' : '異常延遲';
+        document.getElementById('drawer-status').style.color = (statusColor === 'Green') ? 'var(--success)' : 'var(--warning)';
+        
+        document.getElementById('drawer').classList.add('open');
+    }
+
+    function closeDrawer() {
+        document.getElementById('drawer').classList.remove('open');
+    }
+</script>
+
+</body>
+</html>

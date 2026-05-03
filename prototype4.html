@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>Data Nexus v1.4 - Interactive Topology</title>
+    <style>
+        :root {
+            --primary: #2563eb; --success: #10b981; --warning: #f59e0b; --danger: #ef4444;
+            --bg: #f8fafc; --sidebar: #0f172a; --border: #cbd5e1;
+        }
+        body { font-family: "Inter", sans-serif; margin: 0; display: flex; height: 100vh; background: var(--bg); color: #1e293b; }
+        
+        /* Sidebar */
+        nav { width: 240px; background: var(--sidebar); color: white; display: flex; flex-direction: column; flex-shrink: 0; }
+        nav .logo { padding: 25px; font-size: 18px; font-weight: bold; color: var(--primary); border-bottom: 1px solid #1e293b; }
+        nav button { background: none; border: none; color: #94a3b8; padding: 15px 25px; text-align: left; cursor: pointer; width: 100%; }
+        nav button.active { background: #1e293b; color: white; border-left: 4px solid var(--primary); }
+
+        main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .header { padding: 15px 30px; background: white; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+
+        /* Dashboard & Topology */
+        .toolbar { padding: 15px 30px; background: #fff; border-bottom: 1px solid var(--border); display: flex; gap: 20px; align-items: center; }
+        .canvas-area { flex: 1; position: relative; overflow: auto; background: white; background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 30px 30px; }
+        
+        svg#topology-svg { position: absolute; top: 0; left: 0; width: 2000px; height: 2000px; pointer-events: none; z-index: 1; }
+        .node { 
+            position: absolute; padding: 12px 18px; background: white; border: 2px solid var(--border); 
+            border-radius: 8px; font-size: 13px; z-index: 10; cursor: pointer; min-width: 160px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); transition: all 0.2s;
+        }
+        .node:hover { border-color: var(--primary); transform: translateY(-2px); }
+        .node.root { border-color: var(--primary); background: #eff6ff; font-weight: bold; }
+        .node.isolated { border-style: dashed; color: #64748b; background: #f8fafc; }
+        
+        /* Wizard & Form */
+        .content-panel { padding: 30px; overflow-y: auto; flex: 1; }
+        .card { background: white; border-radius: 12px; border: 1px solid var(--border); padding: 30px; max-width: 800px; margin: 0 auto; }
+        .form-row { margin-bottom: 20px; display: grid; grid-template-columns: 180px 1fr; align-items: center; }
+        input, select, textarea { padding: 10px; border: 1px solid var(--border); border-radius: 6px; width: 100%; box-sizing: border-box; }
+        .btn { padding: 10px 24px; border-radius: 6px; border: none; font-weight: bold; cursor: pointer; background: var(--primary); color: white; }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="logo">DATA NEXUS 1.4</div>
+    <div style="flex: 1; padding-top: 20px;">
+        <button class="active" onclick="switchTab('dashboard')">營運拓樸看板</button>
+        <button onclick="switchTab('wizard')">撰寫合約</button>
+    </div>
+</nav>
+
+<main>
+    <div class="header">
+        <h2 id="view-title">全域營運拓樸看板</h2>
+        <div style="font-size: 13px;">Status: <span style="color: var(--success);">Connected to Keycloak</span></div>
+    </div>
+
+    <!-- Dashboard View -->
+    <div id="view-dashboard" class="flex-col" style="display: flex; flex-direction: column; height: 100%;">
+        <div class="toolbar">
+            <label><strong>選擇參考路徑 (Reference Point):</strong></label>
+            <select id="ref-selector" style="width: 250px;" onchange="renderTopology()">
+                <option value="mes">MES_Operation_Complete (基準)</option>
+                <option value="apc">APC_Configuration (獨立視角)</option>
+                <option value="none">無參考點資料 (孤島模式)</option>
+            </select>
+            <span id="topo-info" style="font-size: 12px; color: #64748b;">顯示受 MES 影響之資料鏈</span>
+        </div>
+        
+        <div class="canvas-area" id="canvas">
+            <svg id="topology-svg">
+                <!-- 線條會由 JS 動態生成 -->
+            </svg>
+            <div id="nodes-container">
+                <!-- 節點會由 JS 動態生成 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Wizard View -->
+    <div id="view-wizard" class="content-panel hidden">
+        <div class="card">
+            <h3>建立新資料合約 (Data Spec)</h3>
+            <div class="form-row">
+                <label>合約名稱</label>
+                <input type="text" placeholder="例如: DCS_Sensor_v2">
+            </div>
+            <div class="form-row">
+                <label>參考基準點</label>
+                <select>
+                    <option>MES_Operation_Complete</option>
+                    <option>無參考點 (獨立資料)</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label>SLA 延遲容忍 (Offset)</label>
+                <input type="text" placeholder="例如: T + 20m">
+            </div>
+            <div class="form-row">
+                <label>Data Binding (Python)</label>
+                <textarea style="height: 120px; font-family: monospace; background: #1e1e1e; color: #d4d4d4;">def on_binding(data, platform):
+    # 撰寫對齊邏輯...
+    return data</textarea>
+            </div>
+            <div style="text-align: right;">
+                <button class="btn" onclick="alert('合約已提交並建立 Topology 鏈結')">儲存合約並驗證腳本</button>
+            </div>
+        </div>
+    </div>
+</main>
+
+<script>
+    const dataNodes = {
+        mes: [
+            { id: 'mes_root', label: 'MES Operation', type: 'root', x: 50, y: 200 },
+            { id: 'spc_pool', label: 'SPC Data Pool', offset: 'T+15m', x: 300, y: 100 },
+            { id: 'dcs_stream', label: 'DCS Sensors', offset: 'T+20m', x: 300, y: 300 },
+            { id: 'apc_proc', label: 'APC Process', offset: 'T+30m', x: 550, y: 200 }
+        ],
+        apc: [
+            { id: 'apc_conf', label: 'APC Config', type: 'root', x: 50, y: 100 },
+            { id: 'apc_proc', label: 'APC Process', offset: 'Ref: Config', x: 300, y: 100 }
+        ],
+        none: [
+            { id: 'spc_conf', label: 'SPC Config (Isolated)', type: 'isolated', x: 100, y: 100 },
+            { id: 'apc_conf', label: 'APC Config (Isolated)', type: 'isolated', x: 100, y: 250 }
+        ]
+    };
+
+    const dataEdges = {
+        mes: [
+            ['mes_root', 'spc_pool'], ['mes_root', 'dcs_stream'], ['spc_pool', 'apc_proc'], ['dcs_stream', 'apc_proc']
+        ],
+        apc: [
+            ['apc_conf', 'apc_proc']
+        ],
+        none: []
+    };
+
+    function renderTopology() {
+        const ref = document.getElementById('ref-selector').value;
+        const container = document.getElementById('nodes-container');
+        const svg = document.getElementById('topology-svg');
+        const info = document.getElementById('topo-info');
+        
+        container.innerHTML = '';
+        svg.innerHTML = '';
+        info.innerText = `當前視角：${ref.toUpperCase()} 關聯鏈結`;
+
+        const nodes = dataNodes[ref];
+        const edges = dataEdges[ref];
+
+        // 1. 繪製節點
+        nodes.forEach(n => {
+            const div = document.createElement('div');
+            div.className = `node ${n.type || ''}`;
+            div.id = n.id;
+            div.style.left = n.x + 'px';
+            div.style.top = n.y + 'px';
+            div.innerHTML = `<strong>${n.label}</strong>${n.offset ? '<br><small>Offset: ' + n.offset + '</small>' : ''}`;
+            container.appendChild(div);
+        });
+
+        // 2. 繪製 SVG 連線 (要在節點生成後計算坐標)
+        setTimeout(() => {
+            edges.forEach(edge => {
+                const startNode = nodes.find(n => n.id === edge[0]);
+                const endNode = nodes.find(n => n.id === edge[1]);
+                
+                if (startNode && endNode) {
+                    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                    line.setAttribute("x1", startNode.x + 160);
+                    line.setAttribute("y1", startNode.y + 25);
+                    line.setAttribute("x2", endNode.x);
+                    line.setAttribute("y2", endNode.y + 25);
+                    line.setAttribute("stroke", "#cbd5e1");
+                    line.setAttribute("stroke-width", "2");
+                    line.setAttribute("marker-end", "url(#arrowhead)");
+                    svg.appendChild(line);
+                }
+            });
+        }, 10);
+    }
+
+    function switchTab(tabId) {
+        document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+        event.target.classList.add('active');
+        
+        document.getElementById('view-dashboard').classList.add('hidden');
+        document.getElementById('view-wizard').classList.add('hidden');
+        document.getElementById('view-' + tabId).classList.remove('hidden');
+        document.getElementById('view-title').innerText = tabId === 'dashboard' ? '全域營運拓樸看板' : '建立新資料合約';
+        
+        if (tabId === 'dashboard') renderTopology();
+    }
+
+    // 初始化
+    window.onload = renderTopology;
+</script>
+
+<!-- 定義 SVG 箭頭標記 -->
+<svg style="position:absolute; width:0; height:0;">
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#cbd5e1" />
+    </marker>
+  </defs>
+</svg>
+
+</body>
+</html>

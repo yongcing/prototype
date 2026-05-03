@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>Data Nexus Platform - v1.2 Prototype</title>
+    <style>
+        :root {
+            --primary: #2563eb; --success: #10b981; --warning: #f59e0b; --danger: #ef4444;
+            --bg: #f1f5f9; --card-bg: #ffffff; --text-main: #1e293b; --border: #cbd5e1;
+            --code-bg: #1e1e1e;
+        }
+        body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; background: var(--bg); color: var(--text-main); }
+        
+        /* Sidebar */
+        nav { width: 260px; background: #0f172a; color: white; display: flex; flex-direction: column; }
+        nav .logo { padding: 25px; font-size: 22px; font-weight: bold; border-bottom: 1px solid #1e293b; }
+        nav button { background: none; border: none; color: #94a3b8; padding: 15px 25px; text-align: left; cursor: pointer; width: 100%; transition: 0.3s; }
+        nav button:hover { background: #1e293b; }
+        nav button.active { background: var(--primary); color: white; }
+
+        main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .header { padding: 15px 30px; background: white; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+        .content { flex: 1; padding: 25px; overflow-y: auto; }
+
+        /* 拓撲圖樣式 */
+        .graph-canvas { background: white; border-radius: 12px; height: 500px; border: 1px solid var(--border); position: relative; overflow: hidden; background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 30px 30px; }
+        .node { position: absolute; padding: 12px; border-radius: 8px; background: white; border: 2px solid var(--border); cursor: pointer; z-index: 10; min-width: 150px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        .node.root { border-color: var(--primary); background: #eff6ff; }
+        .node.warning { border-color: var(--warning); }
+        .edge-label { position: absolute; background: white; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); font-size: 11px; z-index: 5; }
+
+        /* 三欄式工作台 */
+        .workbench { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; height: 600px; }
+        .editor-container { background: var(--code-bg); border-radius: 8px; display: flex; flex-direction: column; }
+        .editor-header { padding: 10px; color: #aaa; font-size: 12px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }
+        textarea.code-editor { flex: 1; background: transparent; color: #d4d4d4; border: none; padding: 15px; font-family: 'Courier New', monospace; resize: none; outline: none; line-height: 1.5; }
+        
+        .preview-container { display: flex; flex-direction: column; gap: 20px; }
+        .test-runner, .result-panel { background: white; border-radius: 8px; border: 1px solid var(--border); padding: 15px; flex: 1; overflow-y: auto; }
+        
+        .btn { padding: 8px 16px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-test { background: var(--success); color: white; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+        th, td { border: 1px solid var(--border); padding: 8px; text-align: left; }
+        th { background: #f8fafc; }
+        .link-tag { background: #dcfce7; color: #166534; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; }
+
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="logo">Data Nexus v1.2</div>
+    <button class="active" onclick="show('dashboard')">全域營運拓撲看板</button>
+    <button onclick="show('workbench')">Binding Script 工作台</button>
+    <button onclick="show('iaas')">IaaS 資源目錄</button>
+</nav>
+
+<main>
+    <div class="header">
+        <h2 id="title">全域營運拓撲看板</h2>
+        <div style="font-size: 14px; color: #64748b;">
+            User: <strong>yc_architect</strong> <span style="margin: 0 10px;">|</span> Role: <strong>Platform Owner</strong>
+        </div>
+    </div>
+
+    <div class="content">
+        <!-- 看板 Section -->
+        <div id="section-dashboard">
+            <div style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
+                <label>基準事件：</label>
+                <select style="padding: 5px; border-radius: 4px;">
+                    <option>MES_Operation_Complete (T=0)</option>
+                </select>
+                <span style="font-size: 12px; color: #64748b;">(所有節點將以此為 Reference Point 進行綁定)</span>
+            </div>
+            <div class="graph-canvas" id="canvas">
+                <!-- Root Node -->
+                <div class="node root" style="top: 220px; left: 50px;">
+                    <strong>MES 報工完成</strong><br><small>Ref: Production_Order</small>
+                </div>
+                <!-- Edges & Labels -->
+                <div style="position: absolute; top: 245px; left: 190px; width: 100px; height: 2px; background: #cbd5e1;"></div>
+                <div class="edge-label" style="top: 235px; left: 200px;">T + 30s</div>
+
+                <div class="node" style="top: 220px; left: 290px;" onclick="alert('點擊查看即時日誌詳情')">
+                    <strong>即時生產日誌</strong><br><small>Status: 符合預期</small>
+                </div>
+
+                <div style="position: absolute; top: 245px; left: 440px; width: 120px; height: 2px; background: var(--warning); border-top: 2px dashed white;"></div>
+                <div class="edge-label" style="top: 235px; left: 450px; color: var(--danger);">T + 15m (Delay!)</div>
+
+                <div class="node warning" style="top: 220px; left: 560px;">
+                    <strong>物料耗用紀錄</strong><br><small>Status: 延遲 3m</small>
+                </div>
+
+                <div style="position: absolute; top: 120px; left: 360px; width: 2px; height: 100px; background: #cbd5e1;"></div>
+                <div class="edge-label" style="top: 150px; left: 370px;">T + 2h</div>
+                <div class="node" style="top: 50px; left: 290px;">
+                    <strong>財務成本核算</strong><br><small>Ref: Inherited Key</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- Workbench Section -->
+        <div id="section-workbench" class="hidden">
+            <div class="workbench">
+                <!-- Left: Editor -->
+                <div class="editor-container">
+                    <div class="editor-header">
+                        <span>binding_script.py</span>
+                        <span>Python 3.x (Sandbox)</span>
+                    </div>
+                    <textarea class="code-editor" id="pythonCode">
+def on_binding(current_data, platform):
+    # 1. 根據目前資料的設備 ID 與時間進行搜尋
+    search_criteria = {
+        "eqp_id": current_data['machine_no'],
+        "target_time": current_data['timestamp'],
+        "range": "30s"
+    }
+    
+    # 2. 呼叫平台 API 找尋 MES 基準資料
+    mes_record = platform.find_mes_ref(search_criteria)
+    
+    if mes_record:
+        # 3. 繼承 MES 的關鍵 Primary Key (Production_Order)
+        current_data['trace_id'] = mes_record['order_id']
+        current_data['ontology_link'] = True
+    
+    return current_data</textarea>
+                    <div style="padding: 10px; background: #2d2d2d;">
+                        <button class="btn btn-test" onclick="runTest()">▶ 執行綁定測試 (使用 Sample Data)</button>
+                    </div>
+                </div>
+
+                <!-- Right: Test & Preview -->
+                <div class="preview-container">
+                    <div class="test-runner">
+                        <strong>Step 1: 輸入驗證資料 (Sample Data)</strong>
+                        <table id="input-table">
+                            <thead><tr><th>machine_no</th><th>timestamp</th><th>value</th></tr></thead>
+                            <tbody>
+                                <tr><td>EQP-A01</td><td>2026-05-03 10:00:05</td><td>85.2</td></tr>
+                                <tr><td>EQP-B05</td><td>2026-05-03 10:15:20</td><td>44.9</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="result-panel">
+                        <strong>Step 2: 綁定結果預覽 (Data Linkage)</strong>
+                        <div id="test-status" style="margin-top:10px; font-size: 13px; color: #64748b;">等待測試執行...</div>
+                        <table id="result-table" class="hidden">
+                            <thead><tr><th>machine_no</th><th>Trace_ID (Inherited)</th><th>Status</th></tr></thead>
+                            <tbody id="result-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- IaaS Section -->
+        <div id="section-iaas" class="hidden">
+            <h3>IaaS 資源目錄與 SLA 承諾</h3>
+            <table>
+                <thead><tr><th>資源名稱</th><th>引擎類型</th><th>SLA (Uptime)</th><th>單位成本</th></tr></thead>
+                <tbody>
+                    <tr><td>Production-Analytics</td><td>Doris</td><td>99.99%</td><td>$0.45/GB</td></tr>
+                    <tr><td>Historical-Archives</td><td>Iceberg</td><td>99.9%</td><td>$0.02/GB</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</main>
+
+<script>
+    function show(id) {
+        //切換按鈕樣式
+        document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+        event.target.classList.add('active');
+
+        //切換內容
+        document.getElementById('section-dashboard').classList.add('hidden');
+        document.getElementById('section-workbench').classList.add('hidden');
+        document.getElementById('section-iaas').classList.add('hidden');
+        document.getElementById('section-' + id).classList.remove('hidden');
+
+        //切換標題
+        const titles = { 'dashboard': '全域營運拓撲看板', 'workbench': 'Binding Script 工作台', 'iaas': 'IaaS 資源目錄' };
+        document.getElementById('title').innerText = titles[id];
+    }
+
+    function runTest() {
+        const status = document.getElementById('test-status');
+        const table = document.getElementById('result-table');
+        const body = document.getElementById('result-body');
+        
+        status.innerHTML = "<span style='color:var(--primary)'>⚙️ 正在呼叫 GraalVM Python 引擎...</span>";
+        
+        setTimeout(() => {
+            status.innerHTML = "✅ 測試完成！成功綁定 2 筆資料至 MES 基準點。";
+            table.classList.remove('hidden');
+            body.innerHTML = `
+                <tr>
+                    <td>EQP-A01</td>
+                    <td><span class="link-tag">PO-2026-0001</span></td>
+                    <td style="color:var(--success)">Success</td>
+                </tr>
+                <tr>
+                    <td>EQP-B05</td>
+                    <td><span class="link-tag">PO-2026-0882</span></td>
+                    <td style="color:var(--success)">Success</td>
+                </tr>
+            `;
+        }, 1200);
+    }
+</script>
+</body>
+</html>

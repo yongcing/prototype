@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ontology-simulator
+  namespace: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ontology-simulator
+  template:
+    metadata:
+      labels:
+        app: ontology-simulator
+    spec:
+      containers:
+        - name: ontology-simulator
+          image: ontology-simulator:k8s
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: aiops-config
+          readinessProbe:
+            httpGet:
+              path: /api/v1/status
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/status
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ontology-simulator
+  namespace: aiops
+spec:
+  selector:
+    app: ontology-simulator
+  ports:
+    - port: 8080
+      targetPort: 8080

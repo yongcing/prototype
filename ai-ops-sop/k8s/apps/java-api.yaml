@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiops-java-api
+  namespace: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aiops-java-api
+  template:
+    metadata:
+      labels:
+        app: aiops-java-api
+    spec:
+      containers:
+        - name: aiops-java-api
+          image: aiops-java-api:k8s
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: aiops-config
+          env:
+            # Secrets injected individually so env var names match what Java expects
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: db-password
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: jwt-secret
+            - name: JAVA_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: java-internal-token
+            - name: PYTHON_SIDECAR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: sidecar-token
+            - name: AIOPS_SCHEDULER_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: scheduler-token
+            - name: AIOPS_OIDC_UPSERT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: upsert-secret
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: oidc-backend-secret
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 40
+            periodSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-java-api
+  namespace: aiops
+spec:
+  selector:
+    app: aiops-java-api
+  ports:
+    - port: 8080
+      targetPort: 8080

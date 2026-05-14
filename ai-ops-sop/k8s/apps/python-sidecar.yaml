@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiops-python-sidecar
+  namespace: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aiops-python-sidecar
+  template:
+    metadata:
+      labels:
+        app: aiops-python-sidecar
+    spec:
+      containers:
+        - name: aiops-python-sidecar
+          image: aiops-python-sidecar:k8s
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: aiops-config
+          env:
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: sidecar-token
+            - name: JAVA_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: java-internal-token
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: anthropic-api-key
+          readinessProbe:
+            httpGet:
+              path: /internal/health
+              port: 8080
+              httpHeaders:
+                - name: X-Service-Token
+                  value: aiops_sidecar_token_2024
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /internal/health
+              port: 8080
+              httpHeaders:
+                - name: X-Service-Token
+                  value: aiops_sidecar_token_2024
+            initialDelaySeconds: 40
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-python-sidecar
+  namespace: aiops
+spec:
+  selector:
+    app: aiops-python-sidecar
+  ports:
+    - port: 8080
+      targetPort: 8080

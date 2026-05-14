@@ -1,0 +1,58 @@
+# One-shot Job: runs init.sql against postgres once to enable pgvector
+# and create all tables. Safe to re-run (all statements use IF NOT EXISTS).
+#
+# Run after postgres is ready:
+#   kubectl apply -f deploy/k8s/jobs/postgres-init.yaml
+#   kubectl wait --for=condition=complete job/postgres-init -n aiops --timeout=60s
+#
+# If you need to re-run (e.g. after a schema reset):
+#   kubectl delete job postgres-init -n aiops
+#   kubectl apply -f deploy/k8s/jobs/postgres-init.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-init
+  namespace: aiops
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Wait until postgres is actually accepting connections before running SQL
+        - name: wait-for-postgres
+          image: pgvector/pgvector:pg17
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -U aiops; do
+                echo "Waiting for postgres..."; sleep 2
+              done
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: db-password
+      containers:
+        - name: init-sql
+          image: pgvector/pgvector:pg17
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - psql -h postgres -U aiops -d aiops -f /sql/init.sql
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: db-password
+          volumeMounts:
+            - name: init-sql
+              mountPath: /sql
+      volumes:
+        - name: init-sql
+          configMap:
+            name: postgres-init-sql

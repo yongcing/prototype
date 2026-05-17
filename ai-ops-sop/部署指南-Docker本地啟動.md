@@ -48,6 +48,29 @@
 
 > **Windows 使用者注意**：以下指令皆使用 **PowerShell**，請勿使用 Git Bash（會造成路徑解析問題）。
 
+### PowerShell Encoding 重要說明
+
+Windows 繁體中文系統的預設 Code Page 是 **CP950（Big5）**。若 `.ps1` 檔案存成 UTF-8 without BOM，PowerShell 會用 CP950 讀取，中文字元損壞 → 腳本解析失敗（`MissingCatchOrFinally` 等錯誤）。
+
+**本指南的所有 `.ps1` 腳本皆使用純 ASCII 內容**（無中文字元），徹底迴避此問題。
+
+若你自行撰寫含中文的 PowerShell 腳本，請使用以下任一方式儲存：
+
+```powershell
+# 方法 A：存成 UTF-8 with BOM（PowerShell 看到 BOM 會自動用 UTF-8 讀）
+$content | Set-Content -Path "myscript.ps1" -Encoding UTF8BOM
+
+# 方法 B：在腳本開頭加上 BOM（用任何編輯器存檔後加）
+# VS Code：右下角點 "UTF-8" → 改選 "Save with Encoding" → "UTF-8 with BOM"
+```
+
+若執行腳本時出現亂碼或語法錯誤，先確認 encoding：
+
+```powershell
+# 查看前 3 bytes（有 EF BB BF 代表 UTF-8 with BOM）
+Format-Hex "deploy\start-local.ps1" | Select-Object -First 1
+```
+
 ---
 
 ## 整體架構速覽
@@ -94,6 +117,13 @@ docker pull quay.io/keycloak/keycloak:25.0
 
 > **說明**：deploy 目錄下的 Docker 設定、腳本、config 檔案需要手動建立。  
 > 本節提供所有檔案的完整內容，請依序執行。
+
+> **Encoding 說明**：本節的所有 `.ps1` 腳本內容刻意設計為純 ASCII（無中文）。  
+> 若使用 `New-Item` + `Set-Content` 建立檔案，請加 `-Encoding ASCII` 或 `-Encoding UTF8BOM`：  
+> ```powershell
+> Set-Content -Path "deploy\start-local.ps1" -Value $content -Encoding UTF8BOM
+> ```  
+> 若用文字編輯器（如 VS Code）手動貼上，請確認右下角 encoding 選 **UTF-8** 或 **UTF-8 with BOM**。
 
 ### 3-A-0. `deploy/image-versions.env`（版本管理集中點）
 
@@ -1380,6 +1410,26 @@ docker compose -f deploy/docker-compose.yml up -d --no-deps postgres
 > ```powershell
 > .\deploy\qa-local.ps1
 > ```
+
+---
+
+### Q: 執行 `.ps1` 腳本出現「MissingCatchOrFinally」或亂碼語法錯誤
+
+**根因**：`.ps1` 檔案存成 UTF-8 without BOM，但 Windows 系統 Code Page 是 CP950（Big5），PowerShell 用 Big5 讀 UTF-8 → 中文字元損壞 → tokenizer 解析失敗。
+
+**確認方式**：
+```powershell
+# 查看檔案前 3 bytes：EF BB BF = UTF-8 BOM（正確）；其他 = 沒有 BOM
+Format-Hex "deploy\start-local.ps1" | Select-Object -First 1
+```
+
+**修復**：本指南的腳本皆為純 ASCII，不應出現此問題。若你自行修改腳本加入中文，請重新存成 UTF-8 with BOM：
+```powershell
+$content = Get-Content "deploy\start-local.ps1" -Raw
+Set-Content "deploy\start-local.ps1" -Value $content -Encoding UTF8BOM
+```
+
+或在 VS Code 右下角點 encoding → 選 "Save with Encoding" → "UTF-8 with BOM"。
 
 ---
 

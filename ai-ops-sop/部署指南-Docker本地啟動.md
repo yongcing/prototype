@@ -86,12 +86,44 @@ docker pull redis:7-alpine
 docker pull quay.io/keycloak/keycloak:25.0
 ```
 
+> **提示**：所有 image 版本已集中在 `deploy/image-versions.env`，如需升級只需修改該檔案即可（見下方步驟三-A-0）。
+
 ---
 
 ## 步驟三：建立部署所需的所有檔案
 
 > **說明**：deploy 目錄下的 Docker 設定、腳本、config 檔案需要手動建立。  
 > 本節提供所有檔案的完整內容，請依序執行。
+
+### 3-A-0. `deploy/image-versions.env`（版本管理集中點）
+
+建立 `deploy/image-versions.env`，內容如下：
+
+```env
+# Docker Base Image Versions — centralized version management
+# Edit these lines to upgrade or pin specific image versions
+# Supports: tag (pgvector/pgvector:pg17), short ID (abc123), or full digest (pgvector/pgvector@sha256:abc123...)
+
+# Infrastructure images (used in docker-compose.yml)
+POSTGRES_IMAGE=pgvector/pgvector:pg17
+MONGO_IMAGE=mongo:7
+REDIS_IMAGE=redis:7-alpine
+KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:25.0
+
+# Build images (passed as ARG to application Dockerfiles)
+MAVEN_IMAGE=maven:3.9-eclipse-temurin-17
+JRE_IMAGE=eclipse-temurin:17-jre-alpine
+PYTHON_IMAGE=python:3.11-slim
+NODE_IMAGE=node:20-alpine
+```
+
+> **用途**：此檔案是所有 Docker image 版本的單一來源。修改任何 image 版本時只需編輯此檔案，無需到多個 Dockerfile 或 compose 檔案中分別修改。  
+> **格式支援**：每個變數支援三種格式：
+> - **Tag**（推薦）：`pgvector/pgvector:pg17`
+> - **Full Digest**（可攜帶）：`pgvector/pgvector@sha256:abc123...`
+> - **Short ID**（本機僅有效）：`abc123def456`（只能用於 Infra image，不能用於 Dockerfile FROM）
+
+---
 
 ### 3-A. 建立目錄結構
 
@@ -109,12 +141,16 @@ New-Item -ItemType Directory -Force deploy/docker/postgres
 ### 3-B. `deploy/docker-compose.yml`
 
 ```yaml
+# Load image versions from image-versions.env for variable substitution
+env_file:
+  - ./image-versions.env
+
 services:
 
   # ─── Infrastructure ────────────────────────────────────────────────────────
 
   postgres:
-    image: pgvector/pgvector:pg17
+    image: ${POSTGRES_IMAGE}
     environment:
       POSTGRES_USER: aiops
       POSTGRES_PASSWORD: aiops_db_pass
@@ -131,7 +167,7 @@ services:
       retries: 10
 
   mongo:
-    image: mongo:7
+    image: ${MONGO_IMAGE}
     ports:
       - "27017:27017"
     volumes:
@@ -143,7 +179,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE}
     ports:
       - "6379:6379"
     healthcheck:
@@ -153,7 +189,7 @@ services:
       retries: 10
 
   keycloak:
-    image: quay.io/keycloak/keycloak:25.0
+    image: ${KEYCLOAK_IMAGE}
     # start 模式 + 固定 hostname，確保 JWT iss 欄位永遠是 http://localhost:8090/...
     # 無論請求從瀏覽器（localhost:8090）或容器內部（keycloak:8080）進來都一致。
     # --http-enabled=true      : 允許 HTTP（本地開發無需 TLS）
@@ -183,6 +219,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/ontology-simulator/Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE}
     container_name: deploy-ontology-simulator-1
     ports:
       - "8012:8080"
@@ -202,6 +240,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/java-backend/Dockerfile
+      args:
+        MAVEN_IMAGE: ${MAVEN_IMAGE}
+        JRE_IMAGE: ${JRE_IMAGE}
     container_name: deploy-aiops-java-api-1
     ports:
       - "8002:8080"
@@ -224,6 +265,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/java-scheduler/Dockerfile
+      args:
+        MAVEN_IMAGE: ${MAVEN_IMAGE}
+        JRE_IMAGE: ${JRE_IMAGE}
     container_name: deploy-aiops-java-scheduler-1
     ports:
       - "8003:8080"
@@ -245,6 +289,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/python-sidecar/Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE}
     container_name: deploy-aiops-python-sidecar-1
     ports:
       - "8050:8080"
@@ -264,6 +310,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/aiops-app/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE}
     container_name: deploy-aiops-app-1
     ports:
       - "8000:8080"
@@ -304,7 +352,8 @@ CREATE EXTENSION IF NOT EXISTS vector;
 建立 `deploy/docker/java-backend/Dockerfile`：
 
 ```dockerfile
-FROM maven:3.9-eclipse-temurin-17 AS builder
+ARG MAVEN_IMAGE=maven:3.9-eclipse-temurin-17
+FROM ${MAVEN_IMAGE} AS builder
 WORKDIR /workspace
 
 COPY pom.xml ./
@@ -315,7 +364,8 @@ COPY java-scheduler/src ./java-scheduler/src
 
 RUN mvn -B -Dmaven.test.skip=true package -pl java-backend -am
 
-FROM eclipse-temurin:17-jre-alpine
+ARG JRE_IMAGE=eclipse-temurin:17-jre-alpine
+FROM ${JRE_IMAGE}
 WORKDIR /usrapp
 COPY --from=builder /workspace/java-backend/target/aiops-api.jar app.jar
 COPY deploy/docker/java-backend/run.sh ./run.sh
@@ -343,7 +393,8 @@ exec java -jar /usrapp/app.jar 2>&1 | tee -a /usrapp/log/app.log
 建立 `deploy/docker/java-scheduler/Dockerfile`：
 
 ```dockerfile
-FROM maven:3.9-eclipse-temurin-17 AS builder
+ARG MAVEN_IMAGE=maven:3.9-eclipse-temurin-17
+FROM ${MAVEN_IMAGE} AS builder
 WORKDIR /workspace
 
 COPY pom.xml ./
@@ -356,7 +407,8 @@ COPY java-scheduler/src ./java-scheduler/src
 RUN mvn -B -Dmaven.test.skip=true install -pl java-backend -am && \
     mvn -B -Dmaven.test.skip=true package -pl java-scheduler
 
-FROM eclipse-temurin:17-jre-alpine
+ARG JRE_IMAGE=eclipse-temurin:17-jre-alpine
+FROM ${JRE_IMAGE}
 WORKDIR /usrapp
 COPY --from=builder /workspace/java-scheduler/target/aiops-scheduler.jar app.jar
 COPY deploy/docker/java-scheduler/run.sh ./run.sh
@@ -384,7 +436,8 @@ exec java -jar /usrapp/app.jar 2>&1 | tee -a /usrapp/log/app.log
 建立 `deploy/docker/python-sidecar/Dockerfile`：
 
 ```dockerfile
-FROM python:3.11-slim
+ARG PYTHON_IMAGE=python:3.11-slim
+FROM ${PYTHON_IMAGE}
 WORKDIR /workspace
 
 COPY python_ai_sidecar/requirements.txt ./
@@ -418,7 +471,8 @@ exec uvicorn python_ai_sidecar.main:app \
 建立 `deploy/docker/ontology-simulator/Dockerfile`：
 
 ```dockerfile
-FROM python:3.11-slim
+ARG PYTHON_IMAGE=python:3.11-slim
+FROM ${PYTHON_IMAGE}
 WORKDIR /app
 
 COPY ontology_simulator/requirements.txt ./
@@ -453,7 +507,8 @@ exec uvicorn main:app \
 建立 `deploy/docker/aiops-app/Dockerfile`：
 
 ```dockerfile
-FROM node:20-alpine AS builder
+ARG NODE_IMAGE=node:20-alpine
+FROM ${NODE_IMAGE} AS builder
 WORKDIR /workspace
 
 # Copy both aiops-app and aiops-contract for the file dependency to resolve
@@ -465,7 +520,8 @@ RUN npm ci --legacy-peer-deps
 
 RUN npm run build
 
-FROM node:20-alpine
+ARG NODE_IMAGE=node:20-alpine
+FROM ${NODE_IMAGE}
 WORKDIR /usrapp
 COPY --from=builder /workspace/aiops-app/.next/standalone ./
 COPY --from=builder /workspace/aiops-app/.next/static ./.next/static
@@ -1302,6 +1358,31 @@ OLLAMA_EMBEDDING_MODEL=bge-m3
 
 ## 常見問題排除
 
+### Q: 如何升級 Docker image 版本？
+
+**答**：所有 image 版本集中在 `deploy/image-versions.env`。修改任何版本只需編輯此檔案，無需搜尋多個 Dockerfile。
+
+**範例 — 升級 PostgreSQL 從 pg17 到 pg18**：
+
+```env
+# deploy/image-versions.env 修改此行
+POSTGRES_IMAGE=pgvector/pgvector:pg18
+```
+
+然後重新 build 並啟動：
+
+```powershell
+docker compose -f deploy/docker-compose.yml build postgres
+docker compose -f deploy/docker-compose.yml up -d --no-deps postgres
+```
+
+> **提示**：不同 image 版本可能含有 breaking changes（DB schema incompatibility 等）。升級後務必執行 QA 驗證：
+> ```powershell
+> .\deploy\qa-local.ps1
+> ```
+
+---
+
 ### Q: 本地帳密登入回傳「local login disabled」
 
 **根因**：Java 以 `AUTH_MODE=oidc` 啟動（`application-prod.yml` 未套用步驟四-A 的修正，或修正後未 rebuild）。
@@ -1395,4 +1476,4 @@ Keycloak 使用 `keycloak_data` volume。若 volume 被刪除（`docker compose 
 
 ---
 
-*最後更新：2026-05-17（全面重寫：新增 start-local.ps1 / qa-local.ps1 / keycloak-setup.ps1 完整內容；新增步驟四 Source Code 補丁；重整為可從全新 clone 直接執行的自完備 SOP）*
+*最後更新：2026-05-18（新增步驟三-A-0：image-versions.env 集中版本管理；所有 docker-compose.yml image 和 Dockerfile FROM 改用變數；常見問題新增升級版本說明）*

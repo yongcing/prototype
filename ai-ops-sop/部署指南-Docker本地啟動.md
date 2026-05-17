@@ -28,7 +28,7 @@
 
 基礎設施：
   postgres :5432   (pgvector)
-  mongo    :27018
+  mongo    :27017
   redis    :6379
   keycloak :8090   (SSO 認證)
 ```
@@ -55,24 +55,409 @@ docker pull redis:7-alpine
 docker pull quay.io/keycloak/keycloak:25.0
 ```
 
-> **pgvector/pgvector:pg17** 是標準 PostgreSQL 17 + pgvector 向量搜尋擴充套件，  
-> 不是另一個資料庫，只需啟動這一個容器即可。
+---
+
+## 步驟三：建立 Docker 部署所需檔案
+
+> **說明**：`deploy/docker-compose.yml` 及各服務的 Dockerfile 在此版本的 repo 中可能不存在（已在早期清理提交中移除）。  
+> 本節提供完整的檔案內容，讓你從零手動重建所有必要的部署檔案。
+
+### 3-A. 建立目錄結構
+
+```powershell
+New-Item -ItemType Directory -Force deploy/docker/java-backend/config
+New-Item -ItemType Directory -Force deploy/docker/java-scheduler/config
+New-Item -ItemType Directory -Force deploy/docker/python-sidecar/config
+New-Item -ItemType Directory -Force deploy/docker/ontology-simulator/config
+New-Item -ItemType Directory -Force deploy/docker/aiops-app/config
+New-Item -ItemType Directory -Force deploy/docker/postgres
+```
 
 ---
 
-## 步驟三：複製並填寫設定檔
+### 3-B. `deploy/docker-compose.yml`
 
-從專案根目錄執行，複製所有範例設定：
+建立檔案 `deploy/docker-compose.yml`，內容如下：
 
-```powershell
-cp deploy/docker/aiops-app/config/.env.example            deploy/docker/aiops-app/config/.env
-cp deploy/docker/java-backend/config/app.env.example      deploy/docker/java-backend/config/app.env
-cp deploy/docker/java-scheduler/config/app.env.example    deploy/docker/java-scheduler/config/app.env
-cp deploy/docker/python-sidecar/config/app.env.example    deploy/docker/python-sidecar/config/app.env
-cp deploy/docker/ontology-simulator/config/app.env.example deploy/docker/ontology-simulator/config/app.env
+```yaml
+services:
+
+  # ─── Infrastructure ────────────────────────────────────────────────────────
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: aiops
+      POSTGRES_PASSWORD: aiops_db_pass
+      POSTGRES_DB: aiops
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "aiops"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    # start 模式 + 固定 hostname，確保 JWT iss 欄位永遠是 http://localhost:8090/...
+    # 無論請求從瀏覽器（localhost:8090）或容器內部（keycloak:8080）進來都一致。
+    # --http-enabled=true      : 允許 HTTP（本地開發無需 TLS）
+    # --hostname=http://localhost:8090 : 公開 URL，決定 JWT iss 和 discovery 的 issuer
+    # --hostname-strict=false  : 允許容器內以 keycloak:8080 呼叫（token exchange 用）
+    # --cache=local            : 單節點模式，無需 Infinispan cluster
+    command: ["start", "--http-enabled=true", "--hostname-strict=false", "--hostname=http://localhost:8090", "--cache=local"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: aiops_keycloak_admin
+      KC_HTTP_PORT: "8080"
+    ports:
+      - "8090:8080"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+    healthcheck:
+      # Keycloak 25 (UBI-based) 沒有 curl/wget，改用 bash TCP 連線檢查
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ─── Applications ──────────────────────────────────────────────────────────
+
+  ontology-simulator:
+    build:
+      context: ..
+      dockerfile: deploy/docker/ontology-simulator/Dockerfile
+    container_name: deploy-ontology-simulator-1
+    ports:
+      - "8012:8080"
+    volumes:
+      - ./docker/ontology-simulator/config:/app/config
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      # python:3.11-slim 沒有 wget，用 python3 urllib
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v1/status')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  aiops-java-api:
+    build:
+      context: ..
+      dockerfile: deploy/docker/java-backend/Dockerfile
+    container_name: deploy-aiops-java-api-1
+    ports:
+      - "8002:8080"
+    volumes:
+      - ./docker/java-backend/config:/usrapp/config
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      # eclipse-temurin:17-jre-alpine 有 wget
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  aiops-java-scheduler:
+    build:
+      context: ..
+      dockerfile: deploy/docker/java-scheduler/Dockerfile
+    container_name: deploy-aiops-java-scheduler-1
+    ports:
+      - "8003:8080"
+    volumes:
+      - ./docker/java-scheduler/config:/usrapp/config
+    depends_on:
+      aiops-java-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  aiops-python-sidecar:
+    build:
+      context: ..
+      dockerfile: deploy/docker/python-sidecar/Dockerfile
+    container_name: deploy-aiops-python-sidecar-1
+    ports:
+      - "8050:8080"
+    volumes:
+      - ./docker/python-sidecar/config:/workspace/config
+    depends_on:
+      aiops-java-api:
+        condition: service_healthy
+    healthcheck:
+      # python:3.11-slim 沒有 wget，用 python3 urllib
+      test: ["CMD", "python3", "-c", "import urllib.request; r=urllib.request.Request('http://localhost:8080/internal/health',headers={'X-Service-Token':'aiops_sidecar_token_2024'}); urllib.request.urlopen(r)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  aiops-app:
+    build:
+      context: ..
+      dockerfile: deploy/docker/aiops-app/Dockerfile
+    container_name: deploy-aiops-app-1
+    ports:
+      - "8000:8080"
+    volumes:
+      - ./docker/aiops-app/config:/usrapp/config
+    depends_on:
+      aiops-java-api:
+        condition: service_healthy
+      aiops-python-sidecar:
+        condition: service_healthy
+    healthcheck:
+      # 用 127.0.0.1 而非 localhost：node:20-alpine 裡 localhost 解析成 ::1 (IPv6)
+      # 但 Next.js 只 bind IPv4，會連不上
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  postgres_data:
+  mongo_data:
+  keycloak_data:
 ```
 
-### 3-A. Shared Token 對照表
+> **注意**：`docker compose -f deploy/docker-compose.yml` 執行時，context 是 `deploy/` 目錄，  
+> 但 Dockerfile 中的 `context: ..` 會讓 build context 回到 repo 根目錄（讓 Dockerfile 能存取各服務的原始碼）。
+
+---
+
+### 3-C. `deploy/docker/postgres/init.sql`
+
+建立檔案 `deploy/docker/postgres/init.sql`，內容如下：
+
+```sql
+-- Enable pgvector extension (required before Flyway runs)
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+> 此腳本會在 postgres 容器**首次初始化**時自動執行（掛載至 `/docker-entrypoint-initdb.d/`）。  
+> Flyway 負責所有表格的建立與 migration，不需要額外執行 SQL。
+
+---
+
+### 3-D. Java Backend Dockerfile
+
+建立檔案 `deploy/docker/java-backend/Dockerfile`，內容如下：
+
+```dockerfile
+FROM maven:3.9-eclipse-temurin-17 AS builder
+WORKDIR /workspace
+
+COPY pom.xml ./
+COPY java-backend/pom.xml ./java-backend/
+COPY java-scheduler/pom.xml ./java-scheduler/
+COPY java-backend/src ./java-backend/src
+COPY java-scheduler/src ./java-scheduler/src
+
+RUN mvn -B -Dmaven.test.skip=true package -pl java-backend -am
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /usrapp
+COPY --from=builder /workspace/java-backend/target/aiops-api.jar app.jar
+COPY deploy/docker/java-backend/run.sh ./run.sh
+RUN chmod +x run.sh && mkdir -p config log
+EXPOSE 8080
+ENTRYPOINT ["/usrapp/run.sh"]
+```
+
+建立檔案 `deploy/docker/java-backend/run.sh`，內容如下：
+
+```sh
+#!/bin/sh
+set -e
+if [ -f /usrapp/config/app.env ]; then
+  export $(grep -v '^#' /usrapp/config/app.env | grep -v '^$' | xargs)
+fi
+mkdir -p /usrapp/log
+exec java -jar /usrapp/app.jar 2>&1 | tee -a /usrapp/log/app.log
+```
+
+---
+
+### 3-E. Java Scheduler Dockerfile
+
+建立檔案 `deploy/docker/java-scheduler/Dockerfile`，內容如下：
+
+```dockerfile
+FROM maven:3.9-eclipse-temurin-17 AS builder
+WORKDIR /workspace
+
+COPY pom.xml ./
+COPY java-backend/pom.xml ./java-backend/
+COPY java-scheduler/pom.xml ./java-scheduler/
+COPY java-backend/src ./java-backend/src
+COPY java-scheduler/src ./java-scheduler/src
+
+# java-scheduler depends on java-backend:library classifier — must install first
+RUN mvn -B -Dmaven.test.skip=true install -pl java-backend -am && \
+    mvn -B -Dmaven.test.skip=true package -pl java-scheduler
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /usrapp
+COPY --from=builder /workspace/java-scheduler/target/aiops-scheduler.jar app.jar
+COPY deploy/docker/java-scheduler/run.sh ./run.sh
+RUN chmod +x run.sh && mkdir -p config log
+EXPOSE 8080
+ENTRYPOINT ["/usrapp/run.sh"]
+```
+
+建立檔案 `deploy/docker/java-scheduler/run.sh`，內容如下：
+
+```sh
+#!/bin/sh
+set -e
+if [ -f /usrapp/config/app.env ]; then
+  export $(grep -v '^#' /usrapp/config/app.env | grep -v '^$' | xargs)
+fi
+mkdir -p /usrapp/log
+exec java -jar /usrapp/app.jar 2>&1 | tee -a /usrapp/log/app.log
+```
+
+---
+
+### 3-F. Python Sidecar Dockerfile
+
+建立檔案 `deploy/docker/python-sidecar/Dockerfile`，內容如下：
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /workspace
+
+COPY python_ai_sidecar/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY python_ai_sidecar/ ./python_ai_sidecar/
+COPY deploy/docker/python-sidecar/run.sh ./run.sh
+RUN chmod +x run.sh && mkdir -p config log
+EXPOSE 8080
+ENTRYPOINT ["/workspace/run.sh"]
+```
+
+建立檔案 `deploy/docker/python-sidecar/run.sh`，內容如下：
+
+```sh
+#!/bin/sh
+set -e
+if [ -f /workspace/config/app.env ]; then
+  export $(grep -v '^#' /workspace/config/app.env | grep -v '^$' | xargs)
+fi
+mkdir -p /workspace/log
+exec uvicorn python_ai_sidecar.main:app \
+  --host 0.0.0.0 --port "${SIDECAR_PORT:-8080}" \
+  2>&1 | tee -a /workspace/log/app.log
+```
+
+---
+
+### 3-G. Ontology Simulator Dockerfile
+
+建立檔案 `deploy/docker/ontology-simulator/Dockerfile`，內容如下：
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+
+COPY ontology_simulator/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy simulator source — main.py imports from `app.*` so must be WORKDIR root
+COPY ontology_simulator/ ./
+COPY deploy/docker/ontology-simulator/run.sh ./run.sh
+RUN chmod +x run.sh && mkdir -p config log
+EXPOSE 8080
+ENTRYPOINT ["/app/run.sh"]
+```
+
+建立檔案 `deploy/docker/ontology-simulator/run.sh`，內容如下：
+
+```sh
+#!/bin/sh
+set -e
+if [ -f /app/config/app.env ]; then
+  export $(grep -v '^#' /app/config/app.env | grep -v '^$' | xargs)
+fi
+mkdir -p /app/log
+exec uvicorn main:app \
+  --host 0.0.0.0 --port "${PORT:-8080}" \
+  2>&1 | tee -a /app/log/app.log
+```
+
+---
+
+## 步驟四：複製並填寫設定檔
+
+從專案根目錄執行，建立所有 config 目錄及 `.env` 檔案：
+
+```powershell
+# aiops-app
+Copy-Item deploy/docker/aiops-app/config/.env.example `
+          deploy/docker/aiops-app/config/.env -ErrorAction SilentlyContinue
+
+# Java Backend
+Copy-Item deploy/docker/java-backend/config/app.env.example `
+          deploy/docker/java-backend/config/app.env -ErrorAction SilentlyContinue
+
+# Java Scheduler
+Copy-Item deploy/docker/java-scheduler/config/app.env.example `
+          deploy/docker/java-scheduler/config/app.env -ErrorAction SilentlyContinue
+
+# Python Sidecar
+Copy-Item deploy/docker/python-sidecar/config/app.env.example `
+          deploy/docker/python-sidecar/config/app.env -ErrorAction SilentlyContinue
+
+# Ontology Simulator
+Copy-Item deploy/docker/ontology-simulator/config/app.env.example `
+          deploy/docker/ontology-simulator/config/app.env -ErrorAction SilentlyContinue
+```
+
+> 如果 `.env.example` 不存在（repo 清理後），請直接按以下 4-A～4-F 節的內容手動建立 `.env` 檔案。
+
+---
+
+### 4-A. Shared Token 對照表
 
 以下 Token 必須在多個服務間**完全一致**，請選定一組值後統一填入：
 
@@ -99,7 +484,7 @@ cp deploy/docker/ontology-simulator/config/app.env.example deploy/docker/ontolog
 
 ---
 
-### 3-B. `deploy/docker/aiops-app/config/.env`
+### 4-B. `deploy/docker/aiops-app/config/.env`
 
 ```env
 FASTAPI_BASE_URL=http://aiops-java-api:8080
@@ -124,7 +509,7 @@ HOSTNAME=0.0.0.0
 
 ---
 
-### 3-C. `deploy/docker/java-backend/config/app.env`
+### 4-C. `deploy/docker/java-backend/config/app.env`
 
 ```env
 AIOPS_PROFILE=prod
@@ -155,9 +540,10 @@ CORS_ALLOWED_ORIGINS=http://localhost:8000
 
 ---
 
-### 3-D. `deploy/docker/java-scheduler/config/app.env`
+### 4-D. `deploy/docker/java-scheduler/config/app.env`
 
 ```env
+AIOPS_SCHEDULER_PORT=8080
 DB_URL=jdbc:postgresql://postgres:5432/aiops
 DB_USER=aiops
 DB_PASSWORD=aiops_db_pass
@@ -171,7 +557,7 @@ REDIS_PORT=6379
 
 ---
 
-### 3-E. `deploy/docker/python-sidecar/config/app.env`
+### 4-E. `deploy/docker/python-sidecar/config/app.env`
 
 這個檔案有兩種填法，根據你使用的 **LLM 選項**選擇其中一種：
 
@@ -232,7 +618,7 @@ NATS_SUBSCRIBER_ENABLED=0
 
 ---
 
-### 3-F. `deploy/docker/ontology-simulator/config/app.env`
+### 4-F. `deploy/docker/ontology-simulator/config/app.env`
 
 ```env
 PORT=8080
@@ -241,7 +627,7 @@ MONGODB_URI=mongodb://mongo:27017
 
 ---
 
-## 步驟四：設定 Keycloak（一次性，首次啟動前完成）
+## 步驟五：設定 Keycloak（一次性，首次啟動前完成）
 
 先單獨啟動 Keycloak 容器：
 
@@ -332,7 +718,75 @@ curl -s -X POST "http://localhost:8090/admin/realms/aiops/users/$USER_ID/role-ma
 
 ---
 
-## 步驟五：Build 所有自定義映像
+## 步驟五-B：套用 Keycloak Split-Horizon OIDC 修補（**必要**）
+
+NextAuth v5 內建的 `Keycloak()` provider 會走 OIDC discovery，  
+discovery 回傳的 endpoints 全部指到公開網址（`localhost:8090`），  
+這些 URL 在 `aiops-app` 容器內部無法解析 → 登入時拋 `Configuration` error。
+
+修法是改用手動 OAuth provider，把 browser-facing 的 `authorization` URL  
+和 container-internal 的 `token` / `userinfo` / `jwks` 分開設定。
+
+編輯 `aiops-app/src/auth.ts`：
+
+1. **移除** 檔案頂端 `import Keycloak from "next-auth/providers/keycloak";` 這一行（不再使用內建 provider）。
+
+2. **取代** 原本的 Keycloak provider 區塊：
+
+   ```typescript
+   // ❌ 原本（會壞）
+   if (process.env.OIDC_KEYCLOAK_CLIENT_ID && process.env.OIDC_KEYCLOAK_ISSUER) {
+     providers.push(Keycloak({
+       clientId: process.env.OIDC_KEYCLOAK_CLIENT_ID,
+       clientSecret: process.env.OIDC_KEYCLOAK_CLIENT_SECRET,
+       issuer: process.env.OIDC_KEYCLOAK_ISSUER,
+     }));
+   }
+   ```
+
+   改成：
+
+   ```typescript
+   // ✅ 新版（split-horizon OIDC，手動指定 endpoints）
+   if (process.env.OIDC_KEYCLOAK_CLIENT_ID && process.env.OIDC_KEYCLOAK_ISSUER) {
+     const extBase = process.env.OIDC_KEYCLOAK_ISSUER;
+     const intBase = process.env.OIDC_KEYCLOAK_ISSUER_INTERNAL ?? extBase;
+     providers.push({
+       id: "keycloak",
+       name: "Keycloak",
+       type: "oauth",
+       issuer: extBase,
+       clientId: process.env.OIDC_KEYCLOAK_CLIENT_ID,
+       clientSecret: process.env.OIDC_KEYCLOAK_CLIENT_SECRET ?? "",
+       authorization: {
+         url: `${extBase}/protocol/openid-connect/auth`,
+         params: { scope: "openid email profile" },
+       },
+       token: `${intBase}/protocol/openid-connect/token`,
+       userinfo: `${intBase}/protocol/openid-connect/userinfo`,
+       jwks_endpoint: `${intBase}/protocol/openid-connect/certs`,
+       checks: ["pkce", "state"],
+       profile(profile: Record<string, unknown>) {
+         return {
+           id: profile.sub as string,
+           name: (profile.name ?? profile.preferred_username) as string,
+           email: profile.email as string,
+         };
+       },
+     } as Parameters<typeof providers.push>[0]);
+   }
+   ```
+
+> 為什麼用 `type: "oauth"` 而不是 `type: "oidc"`：  
+> `oidc` type 會自動跑 discovery，把我們手動設的 endpoints 全部覆蓋掉；  
+> `oauth` type 不會 discovery，我們設什麼就用什麼。  
+> Browser 看到的 `authorization.url` 是公開網址（可達），server 走的 `token` / `userinfo` / `jwks_endpoint` 是 Docker 內網（可達），兩邊不互相覆蓋。
+
+完成後請繼續走步驟六（build）— 這個檔案會在 build 時被 Next.js 編進 image。
+
+---
+
+## 步驟六：Build 所有自定義映像
 
 ```powershell
 docker compose -f deploy/docker-compose.yml build
@@ -341,26 +795,6 @@ docker compose -f deploy/docker-compose.yml build
 - 首次 build 約需 **10–20 分鐘**（Maven 下載依賴、npm 安裝套件）
 - 後續再 build 會使用 layer cache，速度大幅加快
 - 如果只修改了某個服務的設定，不需要重新 build（設定檔是以 volume 掛載）
-
----
-
-## 步驟六：初始化資料庫 Schema
-
-首次啟動前，需要先執行 SQL 初始化腳本，啟用 pgvector 擴充套件並建立所有表格：
-
-```powershell
-# 先啟動 postgres
-docker compose -f deploy/docker-compose.yml up postgres -d
-
-# 等 10 秒讓 postgres 就緒
-Start-Sleep -Seconds 10
-
-# 執行初始化腳本
-docker exec -i deploy-postgres-1 psql -U aiops < deploy/docker/postgres/init.sql
-```
-
-> 此腳本使用 `IF NOT EXISTS`，重複執行是安全的，不會刪除已有資料。  
-> 主要作用：啟用 `vector` 擴充套件，並確保所有表格（包含向量欄位的 AI 記憶體資料表）存在。
 
 ---
 
@@ -375,7 +809,7 @@ docker compose -f deploy/docker-compose.yml up -d
 ```
 1. postgres, mongo, redis, keycloak  （同時啟動）
 2. ontology-simulator                （等 mongo healthy）
-3. aiops-java-api                    （等 postgres healthy + keycloak started）
+3. aiops-java-api                    （等 postgres healthy + keycloak healthy）
 4. aiops-java-scheduler              （等 java-api healthy + redis healthy）
 5. aiops-python-sidecar              （等 java-api healthy）
 6. aiops-app                         （等 java-api healthy + python-sidecar healthy）
@@ -439,7 +873,7 @@ curl http://localhost:8012/api/v1/status
 | 8012 | ontology-simulator | 設備資料模擬器 |
 | 8090 | Keycloak | Admin UI（帳號：admin / aiops_keycloak_admin）|
 | 5432 | PostgreSQL | 資料庫（pgvector） |
-| 27018 | MongoDB | 文件資料庫（Simulator 用） |
+| 27017 | MongoDB | 文件資料庫（Simulator 用） |
 | 6379 | Redis | 快取 / 排程佇列 |
 
 ---
@@ -468,7 +902,7 @@ docker compose -f deploy/docker-compose.yml down -v
 
 # 重置 PostgreSQL schema（如資料庫結構損毀）
 docker exec deploy-postgres-1 psql -U aiops -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-docker exec -i deploy-postgres-1 psql -U aiops < deploy/docker/postgres/init.sql
+docker exec deploy-postgres-1 psql -U aiops -d aiops -c "CREATE EXTENSION IF NOT EXISTS vector;"
 docker restart deploy-aiops-java-api-1
 ```
 
@@ -515,17 +949,81 @@ OLLAMA_EMBEDDING_MODEL=bge-m3
 
 ## 常見問題排除
 
-### Q: Keycloak 登入後出現「Configuration」錯誤
+### Q: Keycloak 登入後出現「登入失敗：Configuration」錯誤
 
-代表 NextAuth 無法連到 Keycloak。請確認：
-1. `OIDC_KEYCLOAK_ISSUER` 使用 `localhost:8090`（瀏覽器可存取）
-2. `OIDC_KEYCLOAK_ISSUER_INTERNAL` 使用 `keycloak:8080`（容器內部 DNS）
-3. Realm 名稱是否正確（應為 `aiops`）
+**根因**：NextAuth v5 的 `Keycloak()` provider 預設會走 OIDC discovery（讀 `${issuer}/.well-known/openid-configuration`）。  
+discovery 回傳的 `token_endpoint` / `userinfo_endpoint` / `jwks_uri` 都是 issuer 裡設定的**公開網址**（`http://localhost:8090/...`）。  
+這個 URL 在瀏覽器內可以走，但在 `aiops-app` 容器內部執行 token exchange / JWKS 取得時無法解析（容器內沒有 host 上的 `localhost:8090`），所以後端 fetch 直接失敗，NextAuth 拋 `Configuration` error。
+
+**症狀**：`docker logs deploy-aiops-app-1` 看到：
+```
+[auth][error] TypeError: fetch failed
+   at node:internal/deps/undici/...
+```
+
+**修復**：改用手動 OAuth provider（不走 discovery），把 browser-facing 的 `authorization` URL 和 container-internal 的 `token` / `userinfo` / `jwks_endpoint` 分開設定。  
+編輯 `aiops-app/src/auth.ts`，找到 Keycloak provider 區塊，改成：
+
+```typescript
+if (process.env.OIDC_KEYCLOAK_CLIENT_ID && process.env.OIDC_KEYCLOAK_ISSUER) {
+  // Split-horizon OIDC: browser reaches Keycloak via the public URL (e.g. localhost:8090),
+  // but the Next.js container must use the Docker-internal URL (keycloak:8080) for all
+  // server-side calls (token exchange, userinfo, JWKS).
+  //
+  // OIDC_KEYCLOAK_ISSUER          = public-facing base (browser redirects + JWT iss validation)
+  // OIDC_KEYCLOAK_ISSUER_INTERNAL = internal base for server-side HTTP (defaults to ext if unset)
+  //
+  // We use type:"oauth" to skip Auth.js automatic OIDC discovery, which would return
+  // the public token_endpoint (unreachable from inside a container) and override our settings.
+  const extBase = process.env.OIDC_KEYCLOAK_ISSUER;
+  const intBase = process.env.OIDC_KEYCLOAK_ISSUER_INTERNAL ?? extBase;
+  providers.push({
+    id: "keycloak",
+    name: "Keycloak",
+    type: "oauth",
+    issuer: extBase,
+    clientId: process.env.OIDC_KEYCLOAK_CLIENT_ID,
+    clientSecret: process.env.OIDC_KEYCLOAK_CLIENT_SECRET ?? "",
+    authorization: {
+      url: `${extBase}/protocol/openid-connect/auth`,
+      params: { scope: "openid email profile" },
+    },
+    token: `${intBase}/protocol/openid-connect/token`,
+    userinfo: `${intBase}/protocol/openid-connect/userinfo`,
+    jwks_endpoint: `${intBase}/protocol/openid-connect/certs`,
+    checks: ["pkce", "state"],
+    profile(profile: Record<string, unknown>) {
+      return {
+        id: profile.sub as string,
+        name: (profile.name ?? profile.preferred_username) as string,
+        email: profile.email as string,
+      };
+    },
+  } as Parameters<typeof providers.push>[0]);
+}
+```
+
+同時將檔案頂端的 `import Keycloak from "next-auth/providers/keycloak";` 移除（不再使用 NextAuth 內建 provider）。
+
+**重 build 並 restart**：
+```powershell
+docker compose -f deploy/docker-compose.yml build aiops-app
+docker compose -f deploy/docker-compose.yml up -d --no-deps aiops-app
+```
+
+完成後再次點「使用 Keycloak 登入」即可正常導向 `http://localhost:8090/realms/aiops/...`。
+
+**附加確認**：env 設定須維持下列分裂值（已在 4-B 節列出，這裡再次強調）：
+1. `OIDC_KEYCLOAK_ISSUER=http://localhost:8090/realms/aiops`（瀏覽器可存取）
+2. `OIDC_KEYCLOAK_ISSUER_INTERNAL=http://keycloak:8080/realms/aiops`（容器內部 DNS）
+3. Realm 名稱必須為 `aiops`
+
+> ⚠️ **首次以 Keycloak 登入時**，Keycloak 會跳「Update Account Information」要求填 First name / Last name（因為步驟五第 7 步建使用者時只給了 username/email）。填完一次後就不再出現。
 
 ### Q: AI Agent 對話無回應 / 出現 401 或 403 錯誤
 
 - **401**：Bearer Token 類型不正確。確認 `auth-proxy.ts` 優先使用 `idpAccessToken`（Keycloak JWT），而非 `javaJwt`。
-- **403**：JWT 中缺少 `roles` 欄位。確認步驟四第 6 步的 Protocol Mapper 有建立成功。
+- **403**：JWT 中缺少 `roles` 欄位。確認步驟五第 6 步的 Protocol Mapper 有建立成功。
 
 ### Q: AI Agent 回應 Anthropic 401 / 402 錯誤
 
@@ -535,27 +1033,31 @@ OLLAMA_EMBEDDING_MODEL=bge-m3
 
 ### Q: postgres 容器健康但 Java 啟動後資料庫表格不存在
 
-執行初始化腳本後重啟 Java：
+pgvector extension 未正確初始化，重新執行 init：
 ```powershell
-docker exec -i deploy-postgres-1 psql -U aiops < deploy/docker/postgres/init.sql
+docker exec deploy-postgres-1 psql -U aiops -d aiops -c "CREATE EXTENSION IF NOT EXISTS vector;"
 docker restart deploy-aiops-java-api-1
 ```
 
 ### Q: Port 已被佔用（address already in use）
 
-查看佔用的 Port 並關閉對應程式，或修改 `docker-compose.yml` 中的 host port（左側數字）。  
+查看佔用的 Port 並關閉對應程式，或修改 `docker/docker-compose.yml` 中的 host port（左側數字）。  
 常見衝突：
-- 27017：本機 MongoDB → 已在 compose 中改為 27018
 - 8080：各種本地服務 → Keycloak 已改為 8090
 
 ### Q: Build 失敗 — npm ci 出現 peer dependency 錯誤
 
-React 19 peer dep 衝突，`aiops-app/Dockerfile` 中已加入 `--legacy-peer-deps` 旗標，  
+React 19 peer dep 衝突，`deploy/docker/aiops-app/Dockerfile` 中已加入 `--legacy-peer-deps` 旗標，  
 若出現此問題請確認 Dockerfile 中有這行：
 ```dockerfile
 RUN npm ci --legacy-peer-deps
 ```
 
+### Q: Keycloak Realm 資料在重啟後消失
+
+Keycloak 使用 `keycloak_data` volume 儲存 H2 資料庫。如果 volume 被刪除（`docker compose down -v`），  
+Realm 設定也會一併清除。重建後請重新執行步驟五的 Keycloak 設定指令。
+
 ---
 
-*最後更新：2026-05-14*
+*最後更新：2026-05-15（新增步驟五-B：Keycloak Split-Horizon OIDC 修補）*

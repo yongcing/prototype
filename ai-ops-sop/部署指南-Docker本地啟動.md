@@ -1,7 +1,40 @@
 # AIOps Platform — Docker 本地部署指南
 
 本文件適用於在本機以 Docker Compose 啟動完整 AIOps 平台的人員。  
+從 **全新 git clone** 的乾淨狀態出發，按照本文件操作即可完整建立環境。
+
 全程約需 **20–30 分鐘**（首次 build 時間較長）。
+
+---
+
+## 快速啟動 SOP（完成步驟一～六後執行）
+
+> 所有步驟（Keycloak 初始化、DB 種子資料、服務健康確認、自動化 QA）已整合進腳本。  
+> **完成所有前置步驟後，只需執行這一行**：
+
+```powershell
+# 確保 Docker Desktop 已啟動，並在專案根目錄執行
+.\deploy\start-local.ps1
+```
+
+腳本分為四個 Phase：
+
+| Phase | 動作 |
+|---|---|
+| Phase 1 | 啟動 postgres / mongo / redis / keycloak，等待 Keycloak HTTP 就緒（最多 120 秒） |
+| Phase 2 | 建立 Keycloak aiops realm / clients / roles / 測試使用者（idempotent，已存在自動跳過） |
+| Phase 3 | 啟動所有 App 服務，等待全部 healthy（最多 180 秒） |
+| Phase 3.5 | **DB 初始化**：設定 admin 本地密碼、確保 list_* MCPs 已存在（idempotent） |
+| Phase 4 | 執行自動化 QA 驗證（7 項測試），印出結果摘要 |
+
+完成後可直接開啟 **http://localhost:8000** 登入。
+
+### 登入帳號資訊
+
+| 登入方式 | 帳號 | 密碼 | 說明 |
+|---|---|---|---|
+| 本地帳密（Java JWT） | `admin` | `Admin1234!` | 直接輸入 username，由 Java API 發 JWT |
+| Keycloak SSO | `admin@aiops.local` | `Admin1234!` | 點「使用 Keycloak 登入」，走 OIDC 流程 |
 
 ---
 
@@ -11,7 +44,7 @@
 |---|---|---|
 | Docker Desktop | 4.x 以上 | 確保 Docker daemon 已啟動 |
 | Git | 任意版本 | 用於 clone 專案 |
-| curl | 任意版本（PowerShell 內建） | 用於設定 Keycloak |
+| PowerShell | 5.1 以上（Windows 內建） | 執行腳本用 |
 
 > **Windows 使用者注意**：以下指令皆使用 **PowerShell**，請勿使用 Git Bash（會造成路徑解析問題）。
 
@@ -46,8 +79,6 @@ cd ai-ops-agentic-platform
 
 ## 步驟二：拉取基礎 Docker 映像
 
-以下映像不需要自行 build，直接從 Docker Hub 拉取：
-
 ```powershell
 docker pull pgvector/pgvector:pg17
 docker pull mongo:7
@@ -57,10 +88,10 @@ docker pull quay.io/keycloak/keycloak:25.0
 
 ---
 
-## 步驟三：建立 Docker 部署所需檔案
+## 步驟三：建立部署所需的所有檔案
 
-> **說明**：`deploy/docker-compose.yml` 及各服務的 Dockerfile 在此版本的 repo 中可能不存在（已在早期清理提交中移除）。  
-> 本節提供完整的檔案內容，讓你從零手動重建所有必要的部署檔案。
+> **說明**：deploy 目錄下的 Docker 設定、腳本、config 檔案需要手動建立。  
+> 本節提供所有檔案的完整內容，請依序執行。
 
 ### 3-A. 建立目錄結構
 
@@ -76,8 +107,6 @@ New-Item -ItemType Directory -Force deploy/docker/postgres
 ---
 
 ### 3-B. `deploy/docker-compose.yml`
-
-建立檔案 `deploy/docker-compose.yml`，內容如下：
 
 ```yaml
 services:
@@ -259,28 +288,20 @@ volumes:
   keycloak_data:
 ```
 
-> **注意**：`docker compose -f deploy/docker-compose.yml` 執行時，context 是 `deploy/` 目錄，  
-> 但 Dockerfile 中的 `context: ..` 會讓 build context 回到 repo 根目錄（讓 Dockerfile 能存取各服務的原始碼）。
-
 ---
 
 ### 3-C. `deploy/docker/postgres/init.sql`
 
-建立檔案 `deploy/docker/postgres/init.sql`，內容如下：
-
 ```sql
--- Enable pgvector extension (required before Flyway runs)
+-- Enable pgvector extension (required before any schema creation)
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
-
-> 此腳本會在 postgres 容器**首次初始化**時自動執行（掛載至 `/docker-entrypoint-initdb.d/`）。  
-> Flyway 負責所有表格的建立與 migration，不需要額外執行 SQL。
 
 ---
 
 ### 3-D. Java Backend Dockerfile
 
-建立檔案 `deploy/docker/java-backend/Dockerfile`，內容如下：
+建立 `deploy/docker/java-backend/Dockerfile`：
 
 ```dockerfile
 FROM maven:3.9-eclipse-temurin-17 AS builder
@@ -303,7 +324,7 @@ EXPOSE 8080
 ENTRYPOINT ["/usrapp/run.sh"]
 ```
 
-建立檔案 `deploy/docker/java-backend/run.sh`，內容如下：
+建立 `deploy/docker/java-backend/run.sh`：
 
 ```sh
 #!/bin/sh
@@ -319,7 +340,7 @@ exec java -jar /usrapp/app.jar 2>&1 | tee -a /usrapp/log/app.log
 
 ### 3-E. Java Scheduler Dockerfile
 
-建立檔案 `deploy/docker/java-scheduler/Dockerfile`，內容如下：
+建立 `deploy/docker/java-scheduler/Dockerfile`：
 
 ```dockerfile
 FROM maven:3.9-eclipse-temurin-17 AS builder
@@ -344,7 +365,7 @@ EXPOSE 8080
 ENTRYPOINT ["/usrapp/run.sh"]
 ```
 
-建立檔案 `deploy/docker/java-scheduler/run.sh`，內容如下：
+建立 `deploy/docker/java-scheduler/run.sh`：
 
 ```sh
 #!/bin/sh
@@ -360,7 +381,7 @@ exec java -jar /usrapp/app.jar 2>&1 | tee -a /usrapp/log/app.log
 
 ### 3-F. Python Sidecar Dockerfile
 
-建立檔案 `deploy/docker/python-sidecar/Dockerfile`，內容如下：
+建立 `deploy/docker/python-sidecar/Dockerfile`：
 
 ```dockerfile
 FROM python:3.11-slim
@@ -376,7 +397,7 @@ EXPOSE 8080
 ENTRYPOINT ["/workspace/run.sh"]
 ```
 
-建立檔案 `deploy/docker/python-sidecar/run.sh`，內容如下：
+建立 `deploy/docker/python-sidecar/run.sh`：
 
 ```sh
 #!/bin/sh
@@ -394,7 +415,7 @@ exec uvicorn python_ai_sidecar.main:app \
 
 ### 3-G. Ontology Simulator Dockerfile
 
-建立檔案 `deploy/docker/ontology-simulator/Dockerfile`，內容如下：
+建立 `deploy/docker/ontology-simulator/Dockerfile`：
 
 ```dockerfile
 FROM python:3.11-slim
@@ -411,7 +432,7 @@ EXPOSE 8080
 ENTRYPOINT ["/app/run.sh"]
 ```
 
-建立檔案 `deploy/docker/ontology-simulator/run.sh`，內容如下：
+建立 `deploy/docker/ontology-simulator/run.sh`：
 
 ```sh
 #!/bin/sh
@@ -427,49 +448,545 @@ exec uvicorn main:app \
 
 ---
 
-## 步驟四：複製並填寫設定檔
+### 3-H. AIOps App Dockerfile
 
-從專案根目錄執行，建立所有 config 目錄及 `.env` 檔案：
+建立 `deploy/docker/aiops-app/Dockerfile`：
 
-```powershell
-# aiops-app
-Copy-Item deploy/docker/aiops-app/config/.env.example `
-          deploy/docker/aiops-app/config/.env -ErrorAction SilentlyContinue
+```dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /workspace
 
-# Java Backend
-Copy-Item deploy/docker/java-backend/config/app.env.example `
-          deploy/docker/java-backend/config/app.env -ErrorAction SilentlyContinue
+# Copy both aiops-app and aiops-contract for the file dependency to resolve
+COPY aiops-app/ ./aiops-app/
+COPY aiops-contract/ ./aiops-contract/
 
-# Java Scheduler
-Copy-Item deploy/docker/java-scheduler/config/app.env.example `
-          deploy/docker/java-scheduler/config/app.env -ErrorAction SilentlyContinue
+WORKDIR /workspace/aiops-app
+RUN npm ci --legacy-peer-deps
 
-# Python Sidecar
-Copy-Item deploy/docker/python-sidecar/config/app.env.example `
-          deploy/docker/python-sidecar/config/app.env -ErrorAction SilentlyContinue
+RUN npm run build
 
-# Ontology Simulator
-Copy-Item deploy/docker/ontology-simulator/config/app.env.example `
-          deploy/docker/ontology-simulator/config/app.env -ErrorAction SilentlyContinue
+FROM node:20-alpine
+WORKDIR /usrapp
+COPY --from=builder /workspace/aiops-app/.next/standalone ./
+COPY --from=builder /workspace/aiops-app/.next/static ./.next/static
+COPY --from=builder /workspace/aiops-app/public ./public
+COPY deploy/docker/aiops-app/run.sh ./run.sh
+RUN chmod +x run.sh && mkdir -p config log
+EXPOSE 8080
+ENTRYPOINT ["/usrapp/run.sh"]
 ```
 
-> 如果 `.env.example` 不存在（repo 清理後），請直接按以下 4-A～4-F 節的內容手動建立 `.env` 檔案。
+建立 `deploy/docker/aiops-app/run.sh`：
+
+```sh
+#!/bin/sh
+set -e
+if [ -f /usrapp/config/.env ]; then
+  export $(grep -v '^#' /usrapp/config/.env | grep -v '^$' | xargs)
+fi
+mkdir -p /usrapp/log
+exec node server.js 2>&1 | tee -a /usrapp/log/app.log
+```
 
 ---
 
-### 4-A. Shared Token 對照表
+### 3-I. `deploy/start-local.ps1`（主啟動腳本）
 
-以下 Token 必須在多個服務間**完全一致**，請選定一組值後統一填入：
+建立 `deploy/start-local.ps1`，內容如下：
 
-| Token 名稱 | 需要填入的檔案 | 說明 |
-|---|---|---|
-| DB 密碼 | docker-compose.yml + java-backend + java-scheduler | PostgreSQL 帳密 |
-| `JAVA_INTERNAL_TOKEN` | java-backend + python-sidecar + aiops-app `INTERNAL_API_TOKEN` | 前端→Java 內部呼叫 Token |
-| `PYTHON_SIDECAR_TOKEN` / `SERVICE_TOKEN` | java-backend + java-scheduler + python-sidecar | Java→Sidecar 呼叫 Token |
-| `AIOPS_SCHEDULER_INTERNAL_TOKEN` | java-backend + java-scheduler | Scheduler 服務間 Token |
-| `AIOPS_OIDC_UPSERT_SECRET` | java-backend + aiops-app | Keycloak 使用者同步密鑰 |
+```powershell
+# deploy/start-local.ps1
+# 本地 Docker 完整啟動腳本 (SOP 入口)
+#
+# 用法（在專案根目錄執行）：
+#   .\deploy\start-local.ps1
+#
+# 流程：
+#   Phase 1   — 啟動 Infrastructure (postgres / mongo / redis / keycloak)
+#   Phase 2   — 初始化 Keycloak realm（必須在 Java 啟動前完成）
+#   Phase 3   — 啟動 App Services (ontology-simulator / java-api / sidecar / aiops-app)
+#   Phase 3.5 — 補丁：admin 密碼 + list_* MCPs（idempotent，重複執行安全）
+#   Phase 4   — 自動化 QA 驗證
 
-> 本指南使用的測試值（**生產環境請換成強密碼**）：
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$COMPOSE_FILE = Join-Path $PSScriptRoot "docker-compose.yml"
+$SCRIPT_DIR   = $PSScriptRoot
+
+function Write-Step { param($msg) Write-Host "`n>>> $msg" -ForegroundColor Cyan }
+function Write-Ok   { param($msg) Write-Host "  [OK]  $msg" -ForegroundColor Green }
+function Write-Fail { param($msg) Write-Host "  [!!]  $msg" -ForegroundColor Red }
+function Write-Info { param($msg) Write-Host "  [--]  $msg" -ForegroundColor Gray }
+
+# ─── 前置檢查 ────────────────────────────────────────────────────────────────
+Write-Step "前置檢查"
+try {
+    docker info *>$null
+    Write-Ok "Docker Desktop 已啟動"
+} catch {
+    Write-Fail "Docker Desktop 未啟動，請先開啟 Docker Desktop 再重新執行"
+    exit 1
+}
+
+# ─── Phase 1：啟動 Infrastructure ────────────────────────────────────────────
+Write-Step "Phase 1 — 啟動 Infrastructure (postgres / mongo / redis / keycloak)"
+docker compose -f $COMPOSE_FILE up -d postgres mongo redis keycloak
+Write-Info "等待 Keycloak HTTP 就緒（最多 120 秒）..."
+
+$deadline = (Get-Date).AddSeconds(120)
+$ready = $false
+while ((Get-Date) -lt $deadline) {
+    try {
+        $status = (Invoke-WebRequest -Uri "http://localhost:8090/health/ready" -UseBasicParsing -TimeoutSec 3).StatusCode
+        if ($status -eq 200) { $ready = $true; break }
+    } catch {}
+    Start-Sleep -Seconds 3
+    Write-Host -NoNewline "."
+}
+Write-Host ""
+
+if (-not $ready) {
+    Write-Fail "Keycloak 在 120 秒內未就緒，查看 log："
+    docker compose -f $COMPOSE_FILE logs keycloak --tail 30
+    exit 1
+}
+Write-Ok "Keycloak 已就緒 (http://localhost:8090)"
+
+# ─── Phase 2：初始化 Keycloak Realm ──────────────────────────────────────────
+Write-Step "Phase 2 — 初始化 Keycloak Realm (aiops realm / clients / roles / test user)"
+
+try {
+    Invoke-WebRequest -Uri "http://localhost:8090/realms/aiops" -UseBasicParsing -TimeoutSec 5 | Out-Null
+    Write-Info "aiops realm 已存在，跳過 keycloak-setup.ps1"
+} catch {
+    Write-Info "執行 keycloak-setup.ps1..."
+    & "$SCRIPT_DIR\keycloak-setup.ps1"
+    Write-Ok "Keycloak realm 設定完成"
+}
+
+# ─── Phase 3：啟動 App Services ──────────────────────────────────────────────
+Write-Step "Phase 3 — 啟動 App Services"
+docker compose -f $COMPOSE_FILE up -d
+Write-Info "等待所有 service healthy（最多 180 秒）..."
+
+$services = @{
+    "ontology-simulator"   = "http://localhost:8012/api/v1/status"
+    "aiops-java-api"       = "http://localhost:8002/actuator/health"
+    "aiops-python-sidecar" = "http://localhost:8050/internal/health"
+    "aiops-app"            = "http://localhost:8000"
+}
+
+$deadline = (Get-Date).AddSeconds(180)
+$allUp = $false
+while ((Get-Date) -lt $deadline) {
+    $allUp = $true
+    foreach ($kv in $services.GetEnumerator()) {
+        try {
+            $r = Invoke-WebRequest -Uri $kv.Value -UseBasicParsing -TimeoutSec 3
+            if ($r.StatusCode -ge 400) { $allUp = $false }
+        } catch { $allUp = $false }
+    }
+    if ($allUp) { break }
+    Start-Sleep -Seconds 5
+    Write-Host -NoNewline "."
+}
+Write-Host ""
+
+if (-not $allUp) {
+    Write-Fail "部分 service 在 180 秒內未就緒，顯示 docker compose ps："
+    docker compose -f $COMPOSE_FILE ps
+    Write-Info "查看失敗服務 log，例如："
+    Write-Info "  docker compose -f $COMPOSE_FILE logs aiops-java-api --tail 50"
+    exit 1
+}
+Write-Ok "所有 service 已啟動"
+
+# ─── Phase 3.5：補丁 — admin 密碼 + list_* MCPs ──────────────────────────────
+# 這個步驟是 idempotent：重複執行不會造成資料錯誤。
+# 必須在 java-api 啟動後執行（需要 postgres 可連線）。
+Write-Step "Phase 3.5 — 確保 admin 本地密碼與 list MCPs 已設定"
+
+# 寫 SQL 到暫存檔 → 複製進容器 → 執行（避免 PowerShell/shell 引號衝突）
+$tmpSql = [System.IO.Path]::GetTempFileName() + ".sql"
+@'
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+UPDATE users
+  SET hashed_password = crypt('Admin1234!', gen_salt('bf', 12)),
+      is_active       = true,
+      roles           = '["IT_ADMIN"]'
+  WHERE username = 'admin'
+    AND (hashed_password IS NULL OR hashed_password = '');
+
+INSERT INTO mcp_definitions
+  (name,mcp_type,visibility,description,processing_intent,api_config,input_schema,prefer_over_system,created_at,updated_at)
+VALUES
+  ('list_active_lots','system','public','== What == active lot (Waiting/Processing)。== Returns == [{lot_id,current_step,status,cycle}]','','{"endpoint_url":"{ONTOLOGY_SIM_URL}/api/v1/lots?status=active","method":"GET","headers":{}}','{"fields":[]}',false,NOW(),NOW()),
+  ('list_steps','system','public','== What == 所有 process steps。== Returns == {total,data:[{name,description}]}','','{"endpoint_url":"{ONTOLOGY_SIM_URL}/api/v1/list-steps","method":"GET","headers":{}}','{"fields":[]}',false,NOW(),NOW()),
+  ('list_apcs','system','public','== What == 所有 APC config object。== Returns == {total,data:[{apcID}]}','','{"endpoint_url":"{ONTOLOGY_SIM_URL}/api/v1/list-apcs","method":"GET","headers":{}}','{"fields":[]}',false,NOW(),NOW()),
+  ('list_spcs','system','public','== What == SPC chart 種類(xbar/r/s/p/c)。== Returns == {total,data:[{chart,description}]}','','{"endpoint_url":"{ONTOLOGY_SIM_URL}/api/v1/list-spcs","method":"GET","headers":{}}','{"fields":[]}',false,NOW(),NOW())
+ON CONFLICT (name) DO UPDATE
+  SET api_config = EXCLUDED.api_config, updated_at = NOW();
+'@ | Set-Content -Path $tmpSql -Encoding UTF8
+
+docker cp $tmpSql "deploy-postgres-1:/tmp/patch.sql" 2>&1 | Out-Null
+docker exec deploy-postgres-1 sh -c "psql -U aiops -d aiops -f /tmp/patch.sql" 2>&1 | Out-Null
+Remove-Item $tmpSql -ErrorAction SilentlyContinue
+
+Write-Ok "admin 密碼已設定 (admin / Admin1234!)"
+Write-Ok "list_active_lots / list_steps / list_apcs / list_spcs MCPs 已設定"
+
+# ─── Phase 4：自動化 QA ───────────────────────────────────────────────────────
+Write-Step "Phase 4 — 執行 QA 驗證"
+& "$SCRIPT_DIR\qa-local.ps1"
+```
+
+---
+
+### 3-J. `deploy/qa-local.ps1`（QA 驗證腳本）
+
+建立 `deploy/qa-local.ps1`，內容如下：
+
+```powershell
+# deploy/qa-local.ps1
+# Local Docker QA verification script
+#
+# Usage (from project root):
+#   .\deploy\qa-local.ps1
+#
+# Test account: admin@aiops.local / Admin1234!
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "SilentlyContinue"
+
+$SIDECAR_TOKEN = "aiops_sidecar_token_2024"
+$JAVA_URL      = "http://localhost:8002"
+$SIDECAR_URL   = "http://localhost:8050"
+$SIMULATOR_URL = "http://localhost:8012"
+$APP_URL       = "http://localhost:8000"
+
+$results = [ordered]@{}
+
+function Test-Http {
+    param(
+        [string]$label,
+        [string]$uri,
+        [string]$method = "GET",
+        [hashtable]$body = $null,
+        [hashtable]$headers = @{},
+        [string]$expectContent = $null
+    )
+    try {
+        $params = @{
+            Uri             = $uri
+            Method          = $method
+            UseBasicParsing = $true
+            TimeoutSec      = 10
+            Headers         = $headers
+        }
+        if ($body) {
+            $params.Body        = $body | ConvertTo-Json -Compress
+            $params.ContentType = "application/json"
+        }
+        $r = Invoke-WebRequest @params
+        if ($r.StatusCode -ge 400) {
+            $results[$label] = "FAIL (HTTP $($r.StatusCode))"
+            return $null
+        }
+        if ($expectContent -and ($r.Content -notmatch [regex]::Escape($expectContent))) {
+            $results[$label] = "FAIL (expected '$expectContent' in response)"
+            return $null
+        }
+        $results[$label] = "PASS"
+        return $r.Content
+    } catch {
+        $msg = $_.Exception.Message -replace "`r`n.*", "" -replace "`n.*", ""
+        $results[$label] = "FAIL ($msg)"
+        return $null
+    }
+}
+
+Write-Host ""
+Write-Host "============================================"
+Write-Host "  AIOps Local Docker QA"
+Write-Host "============================================"
+
+# Test 1: Ontology Simulator
+Test-Http "1 Ontology Simulator health" "$SIMULATOR_URL/api/v1/status" | Out-Null
+
+# Test 2: Java API
+Test-Http "2 Java API health" "$JAVA_URL/actuator/health" | Out-Null
+
+# Test 3: Python Sidecar
+Test-Http "3 Python Sidecar health" "$SIDECAR_URL/internal/health" `
+    -headers @{"X-Service-Token" = $SIDECAR_TOKEN} | Out-Null
+
+# Test 4: Local login -> get JWT
+Test-Http "4 Local login (admin)" "$JAVA_URL/api/v1/auth/login" `
+    -method POST -body @{username = "admin"; password = "Admin1234!"} `
+    -expectContent "access_token" | Out-Null
+
+# Test 5: Simulator active lots
+$lotsContent = Test-Http "5 Simulator active lots" "$SIMULATOR_URL/api/v1/lots?status=active"
+if ($lotsContent -and $results["5 Simulator active lots"] -eq "PASS") {
+    try {
+        $lots = $lotsContent | ConvertFrom-Json
+        $count = if ($lots -is [array]) { $lots.Count } `
+            elseif ($lots.data -is [array]) { $lots.data.Count } `
+            else { 0 }
+        if ($count -gt 0) {
+            $results["5 Simulator active lots"] = "PASS ($count lots)"
+        } else {
+            $results["5 Simulator active lots"] = "WARN (0 lots - simulator data may not be seeded)"
+        }
+    } catch {}
+}
+
+# Test 6: MCP definition check via /internal/mcp-definitions
+$mcpDef = $null
+try {
+    $r = Invoke-WebRequest -Uri "$JAVA_URL/internal/mcp-definitions" `
+        -Headers @{"X-Internal-Token" = "aiops_internal_token_2024"} `
+        -UseBasicParsing -TimeoutSec 10
+    $mcpDef = $r.Content
+} catch {}
+if ($mcpDef -match "ONTOLOGY_SIM_URL") {
+    $results["6 MCP URL placeholder"] = "PASS (list MCPs use {ONTOLOGY_SIM_URL} placeholder)"
+} elseif ($mcpDef -match "localhost:8012") {
+    $results["6 MCP URL placeholder"] = "FAIL (still has localhost:8012 - MCPs not fixed)"
+} elseif ($mcpDef) {
+    $results["6 MCP URL placeholder"] = "WARN (MCPs found but placeholder status unclear)"
+} else {
+    $results["6 MCP URL placeholder"] = "SKIP (internal MCP endpoint not reachable)"
+}
+
+# Test 7: AIOps App homepage
+Test-Http "7 AIOps App homepage" $APP_URL | Out-Null
+
+# Print results
+Write-Host ""
+Write-Host "============================================"
+Write-Host "  QA Results"
+Write-Host "============================================"
+
+$allPassed = $true
+foreach ($kv in $results.GetEnumerator()) {
+    $label = $kv.Key
+    $val   = $kv.Value
+    if ($val -like "PASS*") {
+        Write-Host "  [PASS]  $label -- $val"
+    } elseif ($val -like "WARN*" -or $val -like "SKIP*") {
+        Write-Host "  [WARN]  $label -- $val"
+        $allPassed = $false
+    } else {
+        Write-Host "  [FAIL]  $label -- $val"
+        $allPassed = $false
+    }
+}
+
+Write-Host "============================================"
+Write-Host ""
+Write-Host "  Keycloak account : admin@aiops.local / Admin1234!"
+Write-Host "  Local account    : admin / Admin1234!"
+Write-Host ""
+
+if ($allPassed) {
+    Write-Host "  [OK] All tests passed - local Docker deployment is healthy"
+} else {
+    Write-Host "  [!!] Some tests failed - see above"
+    Write-Host "  Diagnose:"
+    Write-Host "    docker compose -f deploy/docker-compose.yml logs aiops-java-api --tail 50"
+    Write-Host "    docker compose -f deploy/docker-compose.yml logs aiops-python-sidecar --tail 50"
+}
+Write-Host "============================================"
+```
+
+---
+
+### 3-K. `deploy/keycloak-setup.ps1`（Keycloak 初始化腳本）
+
+建立 `deploy/keycloak-setup.ps1`，內容如下：
+
+```powershell
+# deploy/keycloak-setup.ps1
+# 建立 aiops realm、clients、roles、測試使用者
+# 由 start-local.ps1 Phase 2 呼叫，也可單獨執行
+
+# 1. 取得管理員 Token
+Write-Host "Getting Keycloak admin token..."
+$tokenResponse = Invoke-WebRequest -Uri "http://localhost:8090/realms/master/protocol/openid-connect/token" `
+    -Method POST -UseBasicParsing `
+    -Body "client_id=admin-cli&username=admin&password=aiops_keycloak_admin&grant_type=password" `
+    -ContentType "application/x-www-form-urlencoded" | ConvertFrom-Json
+
+$TOKEN = $tokenResponse.access_token
+Write-Host "Token obtained."
+
+$headers = @{ "Authorization" = "Bearer $TOKEN"; "Content-Type" = "application/json" }
+
+# 2. 建立 aiops realm
+Write-Host "Creating aiops realm..."
+try {
+    Invoke-WebRequest -Uri "http://localhost:8090/admin/realms" -Method POST -UseBasicParsing `
+        -Headers $headers -Body '{"realm":"aiops","enabled":true}' | Out-Null
+} catch {}
+
+# 3. 建立 aiops-backend client
+Write-Host "Creating aiops-backend client..."
+try {
+    Invoke-WebRequest -Uri "http://localhost:8090/admin/realms/aiops/clients" -Method POST -UseBasicParsing `
+        -Headers $headers `
+        -Body '{"clientId":"aiops-backend","enabled":true,"clientAuthenticatorType":"client-secret","secret":"aiops-backend-secret-2024","serviceAccountsEnabled":true,"publicClient":false}' | Out-Null
+} catch {}
+
+# 4. 建立 aiops-frontend client
+Write-Host "Creating aiops-frontend client..."
+try {
+    Invoke-WebRequest -Uri "http://localhost:8090/admin/realms/aiops/clients" -Method POST -UseBasicParsing `
+        -Headers $headers `
+        -Body '{"clientId":"aiops-frontend","enabled":true,"clientAuthenticatorType":"client-secret","secret":"aiops-frontend-secret-2024","standardFlowEnabled":true,"publicClient":false,"redirectUris":["http://localhost:8000/api/auth/callback/keycloak"],"webOrigins":["http://localhost:8000"]}' | Out-Null
+} catch {}
+
+# 5. 建立 Realm Roles
+Write-Host "Creating realm roles..."
+foreach ($role in @("IT_ADMIN", "PE", "ON_DUTY")) {
+    try {
+        Invoke-WebRequest -Uri "http://localhost:8090/admin/realms/aiops/roles" -Method POST -UseBasicParsing `
+            -Headers $headers -Body "{`"name`":`"$role`"}" | Out-Null
+    } catch {}
+}
+
+# 6. 新增 roles claim 到 aiops-frontend JWT
+Write-Host "Adding roles claim to JWT..."
+$CLIENT_ID = (Invoke-WebRequest -Uri "http://localhost:8090/admin/realms/aiops/clients?clientId=aiops-frontend" `
+    -UseBasicParsing -Headers $headers | ConvertFrom-Json)[0].id
+
+try {
+    Invoke-WebRequest -Uri "http://localhost:8090/admin/realms/aiops/clients/$CLIENT_ID/protocol-mappers/models" `
+        -Method POST -UseBasicParsing -Headers $headers `
+        -Body '{"name":"realm-roles-claim","protocol":"openid-connect","protocolMapper":"oidc-usermodel-realm-role-mapper","config":{"claim.name":"roles","jsonType.label":"String","multivalued":"true","userinfo.token.claim":"true","id.token.claim":"true","access.token.claim":"true"}}' | Out-Null
+} catch {}
+
+# 7. 建立測試使用者並指派 IT_ADMIN 角色
+Write-Host "Creating test user admin@aiops.local..."
+try {
+    Invoke-WebRequest -Uri "http://localhost:8090/admin/realms/aiops/users" -Method POST -UseBasicParsing `
+        -Headers $headers `
+        -Body '{"username":"admin@aiops.local","email":"admin@aiops.local","enabled":true,"emailVerified":true,"credentials":[{"type":"password","value":"Admin1234!","temporary":false}]}' | Out-Null
+} catch {}
+
+$USER_ID = (Invoke-WebRequest -Uri "http://localhost:8090/admin/realms/aiops/users?username=admin@aiops.local" `
+    -UseBasicParsing -Headers $headers | ConvertFrom-Json)[0].id
+
+$ROLE_ID = (Invoke-WebRequest -Uri "http://localhost:8090/admin/realms/aiops/roles/IT_ADMIN" `
+    -UseBasicParsing -Headers $headers | ConvertFrom-Json).id
+
+Invoke-WebRequest -Uri "http://localhost:8090/admin/realms/aiops/users/$USER_ID/role-mappings/realm" `
+    -Method POST -UseBasicParsing -Headers $headers `
+    -Body "[{`"id`":`"$ROLE_ID`",`"name`":`"IT_ADMIN`"}]" | Out-Null
+
+Write-Host "Keycloak setup complete!"
+```
+
+---
+
+## 步驟四：Source Code 補丁（兩個檔案必須修改）
+
+> **這兩個修改解決 Docker 環境的根本問題，新 clone 的 repo 不含這些修正，必須手動套用。**
+
+### 4-A. `java-backend/src/main/resources/application-prod.yml`
+
+**問題**：Spring Boot prod profile 會用此 YAML 覆蓋 `application.yml` 的預設值。  
+若 `auth.mode` 寫死為 `oidc`，即使 `app.env` 設 `AUTH_MODE=local` 也無效 → 本地帳密登入回傳「local login disabled」。
+
+**修改前**（可能是 `mode: oidc` 或類似硬編碼）：
+
+```yaml
+aiops:
+  auth:
+    mode: oidc   # ← 這一行會導致本地登入完全失敗
+```
+
+**修改後**（改成讀環境變數）：
+
+```yaml
+spring:
+  jpa:
+    # Phase 5-7 shared-schema reality: Python owns DDL (Alembic), Java reads
+    # the same tables. Python uses INTEGER FK columns; Java entities use Long
+    # which maps to BIGINT. Hibernate's `validate` would complain, but at
+    # runtime PostgreSQL auto-casts INT → BIGINT on read + write, so the
+    # mismatch is validation-time only. Flip back to `validate` in Phase 8+
+    # when Java fully owns the schema (needs a migration that bumps column
+    # types to BIGINT).
+    hibernate:
+      ddl-auto: none
+  flyway:
+    enabled: ${FLYWAY_ENABLED:false}
+
+aiops:
+  auth:
+    mode: ${AUTH_MODE:local}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS}
+
+logging:
+  level:
+    com.aiops.api: INFO
+```
+
+> **重要**：修改此檔案後，Java image 必須重新 build（步驟五）才能生效。
+
+---
+
+### 4-B. `python_ai_sidecar/pipeline_builder/blocks/mcp_call.py`
+
+**問題**：MCP 的 `endpoint_url` DB 裡儲存 `{ONTOLOGY_SIM_URL}` placeholder，但 sidecar 執行時不解析 → 對 `{ONTOLOGY_SIM_URL}/...` 發 HTTP 請求失敗 → Simulator 完全沒有作用。
+
+在該檔案中找到這一段（約在 112 行附近）：
+
+```python
+url = api_config.get("endpoint_url")
+method = (api_config.get("method") or "GET").upper()
+headers = api_config.get("headers") or {}
+if not url:
+```
+
+**在 `headers = ...` 和 `if not url:` 之間插入以下三行**：
+
+```python
+        # Resolve {ONTOLOGY_SIM_URL} placeholder so Docker containers use the
+        # correct service name instead of the hardcoded localhost:8012 in V17 migration.
+        if url and "{ONTOLOGY_SIM_URL}" in url:
+            from python_ai_sidecar.config import get_settings
+            url = url.replace("{ONTOLOGY_SIM_URL}", get_settings().ONTOLOGY_SIM_URL.rstrip("/"))
+```
+
+修改後該段應如下：
+
+```python
+        url = api_config.get("endpoint_url")
+        method = (api_config.get("method") or "GET").upper()
+        headers = api_config.get("headers") or {}
+        # Resolve {ONTOLOGY_SIM_URL} placeholder so Docker containers use the
+        # correct service name instead of the hardcoded localhost:8012 in V17 migration.
+        if url and "{ONTOLOGY_SIM_URL}" in url:
+            from python_ai_sidecar.config import get_settings
+            url = url.replace("{ONTOLOGY_SIM_URL}", get_settings().ONTOLOGY_SIM_URL.rstrip("/"))
+        if not url:
+            raise BlockExecutionError(
+```
+
+> 修改此檔案後，python-sidecar image 必須重新 build 才能生效。
+
+---
+
+## 步驟五：填寫設定檔
+
+### 5-A. Shared Token 對照表
+
+以下 Token 在多個服務間**必須完全一致**：
 
 | Token | 本指南使用的測試值 |
 |---|---|
@@ -481,10 +998,13 @@ Copy-Item deploy/docker/ontology-simulator/config/app.env.example `
 | NEXTAUTH_SECRET | `aiops_nextauth_secret_change_me_!!` |
 | Keycloak backend client secret | `aiops-backend-secret-2024` |
 | Keycloak frontend client secret | `aiops-frontend-secret-2024` |
+| Keycloak admin 密碼 | `aiops_keycloak_admin` |
+
+> **生產環境請換成強密碼。**
 
 ---
 
-### 4-B. `deploy/docker/aiops-app/config/.env`
+### 5-B. `deploy/docker/aiops-app/config/.env`
 
 ```env
 FASTAPI_BASE_URL=http://aiops-java-api:8080
@@ -505,11 +1025,12 @@ HOSTNAME=0.0.0.0
 ```
 
 > `OIDC_KEYCLOAK_ISSUER` → 瀏覽器看到的外部網址（localhost）  
-> `OIDC_KEYCLOAK_ISSUER_INTERNAL` → 容器內部互通網址（Docker DNS）
+> `OIDC_KEYCLOAK_ISSUER_INTERNAL` → 容器內部互通網址（Docker DNS）  
+> 兩個值分開設定，是 Split-Horizon OIDC 的核心（`aiops-app/src/auth.ts` 已實作）
 
 ---
 
-### 4-C. `deploy/docker/java-backend/config/app.env`
+### 5-C. `deploy/docker/java-backend/config/app.env`
 
 ```env
 AIOPS_PROFILE=prod
@@ -518,14 +1039,14 @@ DB_URL=jdbc:postgresql://postgres:5432/aiops
 DB_USER=aiops
 DB_PASSWORD=aiops_db_pass
 JWT_SECRET=CHANGE_ME_32_CHARS_OR_MORE_____________
-AUTH_MODE=oidc
+AUTH_MODE=local
 OIDC_ISSUER=http://localhost:8090/realms/aiops
 OIDC_CLIENT_ID=aiops-backend
 OIDC_CLIENT_SECRET=aiops-backend-secret-2024
 OIDC_ROLE_CLAIM=roles
 OIDC_JWK_URI=http://keycloak:8080/realms/aiops/protocol/openid-connect/certs
 AIOPS_OIDC_UPSERT_SECRET=aiops_upsert_secret_2024
-AIOPS_SHARED_SECRET_TOKEN=
+AIOPS_SHARED_SECRET_TOKEN=aiops_internal_token_2024
 PYTHON_SIDECAR_URL=http://aiops-python-sidecar:8080
 PYTHON_SIDECAR_TOKEN=aiops_sidecar_token_2024
 JAVA_INTERNAL_TOKEN=aiops_internal_token_2024
@@ -533,14 +1054,15 @@ JAVA_INTERNAL_ALLOWED_IPS=
 AIOPS_SCHEDULER_BASE_URL=http://aiops-java-scheduler:8080
 AIOPS_SCHEDULER_INTERNAL_TOKEN=aiops_scheduler_token_2024
 CORS_ALLOWED_ORIGINS=http://localhost:8000
+ONTOLOGY_SIM_URL=http://ontology-simulator:8080
 ```
 
-> `JAVA_INTERNAL_ALLOWED_IPS=`（空值）：停用 IP 白名單，因為 Docker 容器 IP 動態分配。  
-> `JWT_SECRET`：請填入至少 32 個字元的任意字串。
+> **關鍵**：`AUTH_MODE=local`（必須，不可為 `oidc`，否則本地帳密登入失敗）  
+> **關鍵**：`AIOPS_SHARED_SECRET_TOKEN` 必須填值，不可留空
 
 ---
 
-### 4-D. `deploy/docker/java-scheduler/config/app.env`
+### 5-D. `deploy/docker/java-scheduler/config/app.env`
 
 ```env
 AIOPS_SCHEDULER_PORT=8080
@@ -557,7 +1079,7 @@ REDIS_PORT=6379
 
 ---
 
-### 4-E. `deploy/docker/python-sidecar/config/app.env`
+### 5-E. `deploy/docker/python-sidecar/config/app.env`
 
 這個檔案有兩種填法，根據你使用的 **LLM 選項**選擇其中一種：
 
@@ -575,6 +1097,9 @@ LLM_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxxxxx   # 填入你的 Anthropic Key
 ANTHROPIC_MODEL=claude-sonnet-4-6
 ANTHROPIC_MAX_TOKENS=8096
+
+ONTOLOGY_SIM_URL=http://ontology-simulator:8080
+POLLER_SOURCE_URL=http://ontology-simulator:8080/events
 
 # 背景任務（初始可停用）
 EVENT_POLLER_ENABLED=0
@@ -607,182 +1132,25 @@ OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
 OLLAMA_MODEL=qwen3:latest
 OLLAMA_EMBEDDING_MODEL=bge-m3
 
+ONTOLOGY_SIM_URL=http://ontology-simulator:8080
+POLLER_SOURCE_URL=http://ontology-simulator:8080/events
+
 # 背景任務（初始可停用）
 EVENT_POLLER_ENABLED=0
 NATS_SUBSCRIBER_ENABLED=0
 ```
 
 > `host.docker.internal` 是 Docker Desktop for Windows/Mac 的特殊 DNS，  
-> 讓容器可以連回到宿主機（你的電腦）上的 Ollama。  
-> `OLLAMA_BASE_URL` 結尾必須是 `/v1`（OpenAI 相容 API 路徑）。
+> 讓容器可以連回到宿主機（你的電腦）上的 Ollama。
 
 ---
 
-### 4-F. `deploy/docker/ontology-simulator/config/app.env`
+### 5-F. `deploy/docker/ontology-simulator/config/app.env`
 
 ```env
 PORT=8080
 MONGODB_URI=mongodb://mongo:27017
 ```
-
----
-
-## 步驟五：設定 Keycloak（一次性，首次啟動前完成）
-
-先單獨啟動 Keycloak 容器：
-
-```powershell
-docker compose -f deploy/docker-compose.yml up keycloak -d
-```
-
-等待約 **30 秒**讓 Keycloak 完全啟動，再執行以下設定指令：
-
-```powershell
-# 1. 取得管理員 Token
-$TOKEN = (curl -s -X POST http://localhost:8090/realms/master/protocol/openid-connect/token `
-  -d "client_id=admin-cli&username=admin&password=aiops_keycloak_admin&grant_type=password" `
-  | ConvertFrom-Json).access_token
-
-# 確認 Token 有拿到（應顯示一長串字串）
-echo $TOKEN
-```
-
-```powershell
-# 2. 建立 aiops realm
-curl -s -X POST http://localhost:8090/admin/realms `
-  -H "Authorization: Bearer $TOKEN" `
-  -H "Content-Type: application/json" `
-  -d '{"realm":"aiops","enabled":true}'
-```
-
-```powershell
-# 3. 建立 aiops-backend 用戶端（供 Java API 驗證 JWT）
-curl -s -X POST http://localhost:8090/admin/realms/aiops/clients `
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" `
-  -d '{"clientId":"aiops-backend","enabled":true,"clientAuthenticatorType":"client-secret","secret":"aiops-backend-secret-2024","serviceAccountsEnabled":true,"publicClient":false}'
-```
-
-```powershell
-# 4. 建立 aiops-frontend 用戶端（供 Next.js NextAuth 登入流程）
-curl -s -X POST http://localhost:8090/admin/realms/aiops/clients `
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" `
-  -d '{"clientId":"aiops-frontend","enabled":true,"clientAuthenticatorType":"client-secret","secret":"aiops-frontend-secret-2024","standardFlowEnabled":true,"publicClient":false,"redirectUris":["http://localhost:8000/api/auth/callback/keycloak"],"webOrigins":["http://localhost:8000"]}'
-```
-
-```powershell
-# 5. 建立 Realm Roles（三個角色）
-curl -s -X POST http://localhost:8090/admin/realms/aiops/roles `
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" `
-  -d '{"name":"IT_ADMIN"}'
-
-curl -s -X POST http://localhost:8090/admin/realms/aiops/roles `
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" `
-  -d '{"name":"PE"}'
-
-curl -s -X POST http://localhost:8090/admin/realms/aiops/roles `
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" `
-  -d '{"name":"ON_DUTY"}'
-```
-
-```powershell
-# 6. 新增 roles claim 到 aiops-frontend JWT（讓 Java 能讀取角色）
-# 先取得 aiops-frontend 的內部 ID
-$CLIENT_ID = (curl -s "http://localhost:8090/admin/realms/aiops/clients?clientId=aiops-frontend" `
-  -H "Authorization: Bearer $TOKEN" | ConvertFrom-Json)[0].id
-
-# 新增 Protocol Mapper（將 realm roles 放入 JWT 的 roles 欄位）
-curl -s -X POST "http://localhost:8090/admin/realms/aiops/clients/$CLIENT_ID/protocol-mappers/models" `
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" `
-  -d '{"name":"realm-roles-claim","protocol":"openid-connect","protocolMapper":"oidc-usermodel-realm-role-mapper","config":{"claim.name":"roles","jsonType.label":"String","multivalued":"true","userinfo.token.claim":"true","id.token.claim":"true","access.token.claim":"true"}}'
-```
-
-```powershell
-# 7. 建立測試使用者（IT_ADMIN 角色）
-curl -s -X POST http://localhost:8090/admin/realms/aiops/users `
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" `
-  -d '{"username":"admin@aiops.local","email":"admin@aiops.local","enabled":true,"emailVerified":true,"credentials":[{"type":"password","value":"Admin1234!","temporary":false}]}'
-
-# 取得使用者 ID 並指派 IT_ADMIN 角色
-$USER_ID = (curl -s "http://localhost:8090/admin/realms/aiops/users?username=admin@aiops.local" `
-  -H "Authorization: Bearer $TOKEN" | ConvertFrom-Json)[0].id
-
-$ROLE_ID = (curl -s "http://localhost:8090/admin/realms/aiops/roles/IT_ADMIN" `
-  -H "Authorization: Bearer $TOKEN" | ConvertFrom-Json).id
-
-curl -s -X POST "http://localhost:8090/admin/realms/aiops/users/$USER_ID/role-mappings/realm" `
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" `
-  -d "[{`"id`":`"$ROLE_ID`",`"name`":`"IT_ADMIN`"}]"
-```
-
-> **可選：新增其他角色的測試使用者**（PE、ON_DUTY），方法相同，只需更換 username 和角色名稱。
-
----
-
-## 步驟五-B：套用 Keycloak Split-Horizon OIDC 修補（**必要**）
-
-NextAuth v5 內建的 `Keycloak()` provider 會走 OIDC discovery，  
-discovery 回傳的 endpoints 全部指到公開網址（`localhost:8090`），  
-這些 URL 在 `aiops-app` 容器內部無法解析 → 登入時拋 `Configuration` error。
-
-修法是改用手動 OAuth provider，把 browser-facing 的 `authorization` URL  
-和 container-internal 的 `token` / `userinfo` / `jwks` 分開設定。
-
-編輯 `aiops-app/src/auth.ts`：
-
-1. **移除** 檔案頂端 `import Keycloak from "next-auth/providers/keycloak";` 這一行（不再使用內建 provider）。
-
-2. **取代** 原本的 Keycloak provider 區塊：
-
-   ```typescript
-   // ❌ 原本（會壞）
-   if (process.env.OIDC_KEYCLOAK_CLIENT_ID && process.env.OIDC_KEYCLOAK_ISSUER) {
-     providers.push(Keycloak({
-       clientId: process.env.OIDC_KEYCLOAK_CLIENT_ID,
-       clientSecret: process.env.OIDC_KEYCLOAK_CLIENT_SECRET,
-       issuer: process.env.OIDC_KEYCLOAK_ISSUER,
-     }));
-   }
-   ```
-
-   改成：
-
-   ```typescript
-   // ✅ 新版（split-horizon OIDC，手動指定 endpoints）
-   if (process.env.OIDC_KEYCLOAK_CLIENT_ID && process.env.OIDC_KEYCLOAK_ISSUER) {
-     const extBase = process.env.OIDC_KEYCLOAK_ISSUER;
-     const intBase = process.env.OIDC_KEYCLOAK_ISSUER_INTERNAL ?? extBase;
-     providers.push({
-       id: "keycloak",
-       name: "Keycloak",
-       type: "oauth",
-       issuer: extBase,
-       clientId: process.env.OIDC_KEYCLOAK_CLIENT_ID,
-       clientSecret: process.env.OIDC_KEYCLOAK_CLIENT_SECRET ?? "",
-       authorization: {
-         url: `${extBase}/protocol/openid-connect/auth`,
-         params: { scope: "openid email profile" },
-       },
-       token: `${intBase}/protocol/openid-connect/token`,
-       userinfo: `${intBase}/protocol/openid-connect/userinfo`,
-       jwks_endpoint: `${intBase}/protocol/openid-connect/certs`,
-       checks: ["pkce", "state"],
-       profile(profile: Record<string, unknown>) {
-         return {
-           id: profile.sub as string,
-           name: (profile.name ?? profile.preferred_username) as string,
-           email: profile.email as string,
-         };
-       },
-     } as Parameters<typeof providers.push>[0]);
-   }
-   ```
-
-> 為什麼用 `type: "oauth"` 而不是 `type: "oidc"`：  
-> `oidc` type 會自動跑 discovery，把我們手動設的 endpoints 全部覆蓋掉；  
-> `oauth` type 不會 discovery，我們設什麼就用什麼。  
-> Browser 看到的 `authorization.url` 是公開網址（可達），server 走的 `token` / `userinfo` / `jwks_endpoint` 是 Docker 內網（可達），兩邊不互相覆蓋。
-
-完成後請繼續走步驟六（build）— 這個檔案會在 build 時被 Next.js 編進 image。
 
 ---
 
@@ -794,71 +1162,54 @@ docker compose -f deploy/docker-compose.yml build
 
 - 首次 build 約需 **10–20 分鐘**（Maven 下載依賴、npm 安裝套件）
 - 後續再 build 會使用 layer cache，速度大幅加快
-- 如果只修改了某個服務的設定，不需要重新 build（設定檔是以 volume 掛載）
+- 如果只修改了 config 檔案（不修改 source code），不需要重新 build
 
 ---
 
-## 步驟七：啟動完整服務堆疊
+## 步驟七：執行啟動腳本
 
 ```powershell
-docker compose -f deploy/docker-compose.yml up -d
+.\deploy\start-local.ps1
 ```
 
-啟動順序由 `depends_on` + healthcheck 自動控制：
+腳本完成後，終端機會顯示 QA 結果：
 
 ```
-1. postgres, mongo, redis, keycloak  （同時啟動）
-2. ontology-simulator                （等 mongo healthy）
-3. aiops-java-api                    （等 postgres healthy + keycloak healthy）
-4. aiops-java-scheduler              （等 java-api healthy + redis healthy）
-5. aiops-python-sidecar              （等 java-api healthy）
-6. aiops-app                         （等 java-api healthy + python-sidecar healthy）
-```
+============================================
+  QA Results
+============================================
+  [PASS]  1 Ontology Simulator health -- PASS
+  [PASS]  2 Java API health -- PASS
+  [PASS]  3 Python Sidecar health -- PASS
+  [PASS]  4 Local login (admin) -- PASS
+  [PASS]  5 Simulator active lots -- PASS (N lots)
+  [PASS]  6 MCP URL placeholder -- PASS (list MCPs use {ONTOLOGY_SIM_URL} placeholder)
+  [PASS]  7 AIOps App homepage -- PASS
+============================================
+  Keycloak account : admin@aiops.local / Admin1234!
+  Local account    : admin / Admin1234!
 
-全部容器達到 healthy 狀態約需 **2–5 分鐘**。
-
----
-
-## 步驟八：驗證服務狀態
-
-```powershell
-# 查看所有容器狀態（應全部顯示 Up (healthy)）
-docker compose -f deploy/docker-compose.yml ps
-```
-
-逐項確認健康狀態：
-
-```powershell
-# Java API（Spring Boot Actuator）
-curl http://localhost:8002/actuator/health
-# 預期回傳：{"status":"UP"}
-
-# Python Sidecar（需要 Token Header）
-curl -H "X-Service-Token: aiops_sidecar_token_2024" http://localhost:8050/internal/health
-# 預期回傳：200 OK
-
-# Ontology Simulator
-curl http://localhost:8012/api/v1/status
-# 預期回傳：200 OK
-
-# 前端（瀏覽器開啟）
-# http://localhost:8000  → 應自動跳轉到 Keycloak 登入頁面
+  [OK] All tests passed - local Docker deployment is healthy
+============================================
 ```
 
 ---
 
-## 步驟九：登入測試
+## 步驟八：登入測試
 
 在瀏覽器開啟 **http://localhost:8000**
 
-| 帳號 | 密碼 | 角色 | 說明 |
+| 登入方式 | 帳號 | 密碼 | 角色 |
 |---|---|---|---|
-| `admin@aiops.local` | `Admin1234!` | IT_ADMIN | 完整管理權限，可使用所有 AI 功能 |
+| 本地帳密 | `admin` | `Admin1234!` | IT_ADMIN |
+| Keycloak SSO | `admin@aiops.local` | `Admin1234!` | IT_ADMIN |
 
 > **角色說明：**
 > - `IT_ADMIN`：最高權限，可建立 Pipeline、編輯 Skill、讀寫記憶體
 > - `PE`：Process Engineer，可使用 AI Agent + 建立 Pipeline，不能管理系統設定
 > - `ON_DUTY`：值班工程師，唯讀模式，只能使用已發布的 Skill，不能建立新的 Pipeline
+
+> **首次以 Keycloak 登入時**，Keycloak 可能跳「Update Account Information」要求填 First name / Last name。填完一次後就不再出現。
 
 ---
 
@@ -881,6 +1232,9 @@ curl http://localhost:8012/api/v1/status
 ## 常用維運指令
 
 ```powershell
+# 單獨執行 QA 驗證
+.\deploy\qa-local.ps1
+
 # 查看某服務的即時 Log
 docker logs deploy-aiops-java-api-1 -f --tail 50
 
@@ -937,93 +1291,75 @@ OLLAMA_EMBEDDING_MODEL=bge-m3
 
 | 模型 | 指令 | 大小 | 工具呼叫支援 |
 |---|---|---|---|
-| Qwen3 8B | `ollama pull qwen3:8b` | ~5 GB | ✅ |
-| Qwen3 14B | `ollama pull qwen3:14b` | ~9 GB | ✅ |
-| Llama3.1 8B | `ollama pull llama3.1:8b` | ~5 GB | ✅ |
+| Qwen3 8B | `ollama pull qwen3:8b` | ~5 GB | 支援 |
+| Qwen3 14B | `ollama pull qwen3:14b` | ~9 GB | 支援 |
+| Llama3.1 8B | `ollama pull llama3.1:8b` | ~5 GB | 支援 |
 | bge-m3（嵌入模型） | `ollama pull bge-m3` | ~1.2 GB | N/A（必須安裝） |
 
-> ⚠️ **嵌入模型 bge-m3 是必須的**：AI Agent 的語意記憶（agent_knowledge 資料表）使用 1024 維向量，  
-> bge-m3 輸出正好是 1024 維。若不安裝，知識庫搜尋功能將無法運作。
+> **嵌入模型 bge-m3 是必須的**：AI Agent 的語意記憶使用 1024 維向量，bge-m3 輸出正好是 1024 維。若不安裝，知識庫搜尋功能將無法運作。
 
 ---
 
 ## 常見問題排除
 
+### Q: 本地帳密登入回傳「local login disabled」
+
+**根因**：Java 以 `AUTH_MODE=oidc` 啟動（`application-prod.yml` 未套用步驟四-A 的修正，或修正後未 rebuild）。
+
+**修復**：
+1. 確認 `java-backend/src/main/resources/application-prod.yml` 中 `mode: ${AUTH_MODE:local}` 已套用
+2. 重新 build + restart：
+```powershell
+docker compose -f deploy/docker-compose.yml build aiops-java-api
+docker compose -f deploy/docker-compose.yml up -d --no-deps aiops-java-api
+```
+
+---
+
+### Q: 本地帳密登入回傳「invalid credentials（403）」
+
+**根因**：admin 使用者沒有本地密碼（Keycloak oidc-upsert 建立的帳戶預設 `hashed_password` 為空）。
+
+**修復**：重新執行 `start-local.ps1`（Phase 3.5 是 idempotent 的），或手動執行：
+```powershell
+docker exec deploy-postgres-1 psql -U aiops -d aiops -c "
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+UPDATE users SET hashed_password = crypt('Admin1234!', gen_salt('bf', 12)), is_active = true, roles = '[\"IT_ADMIN\"]' WHERE username = 'admin';
+"
+```
+
+---
+
+### Q: AI Agent 呼叫 Simulator 無效果（list_active_lots 等 MCP 沒有資料）
+
+**根因 1**：`mcp_call.py` 沒有套用步驟四-B 的 placeholder 解析補丁 → sidecar 對 `{ONTOLOGY_SIM_URL}/...` 字面發請求失敗。  
+**修復**：套用補丁後重新 build python-sidecar。
+
+**根因 2**：`mcp_definitions` 表沒有 list_* 記錄（Phase 3.5 未執行）。  
+**修復**：重新執行 `start-local.ps1` 或 `qa-local.ps1` 後手動確認。
+
+**根因 3**：python-sidecar 的 `ONTOLOGY_SIM_URL` 環境變數缺失。  
+**修復**：確認 `deploy/docker/python-sidecar/config/app.env` 有 `ONTOLOGY_SIM_URL=http://ontology-simulator:8080`。
+
+---
+
 ### Q: Keycloak 登入後出現「登入失敗：Configuration」錯誤
 
-**根因**：NextAuth v5 的 `Keycloak()` provider 預設會走 OIDC discovery（讀 `${issuer}/.well-known/openid-configuration`）。  
-discovery 回傳的 `token_endpoint` / `userinfo_endpoint` / `jwks_uri` 都是 issuer 裡設定的**公開網址**（`http://localhost:8090/...`）。  
-這個 URL 在瀏覽器內可以走，但在 `aiops-app` 容器內部執行 token exchange / JWKS 取得時無法解析（容器內沒有 host 上的 `localhost:8090`），所以後端 fetch 直接失敗，NextAuth 拋 `Configuration` error。
+**根因**：NextAuth v5 的 `Keycloak()` provider 走 OIDC discovery，回傳的 endpoints 指向 `localhost:8090`，但容器內部無法解析 → 登入失敗。
 
-**症狀**：`docker logs deploy-aiops-app-1` 看到：
-```
-[auth][error] TypeError: fetch failed
-   at node:internal/deps/undici/...
-```
-
-**修復**：改用手動 OAuth provider（不走 discovery），把 browser-facing 的 `authorization` URL 和 container-internal 的 `token` / `userinfo` / `jwks_endpoint` 分開設定。  
-編輯 `aiops-app/src/auth.ts`，找到 Keycloak provider 區塊，改成：
-
-```typescript
-if (process.env.OIDC_KEYCLOAK_CLIENT_ID && process.env.OIDC_KEYCLOAK_ISSUER) {
-  // Split-horizon OIDC: browser reaches Keycloak via the public URL (e.g. localhost:8090),
-  // but the Next.js container must use the Docker-internal URL (keycloak:8080) for all
-  // server-side calls (token exchange, userinfo, JWKS).
-  //
-  // OIDC_KEYCLOAK_ISSUER          = public-facing base (browser redirects + JWT iss validation)
-  // OIDC_KEYCLOAK_ISSUER_INTERNAL = internal base for server-side HTTP (defaults to ext if unset)
-  //
-  // We use type:"oauth" to skip Auth.js automatic OIDC discovery, which would return
-  // the public token_endpoint (unreachable from inside a container) and override our settings.
-  const extBase = process.env.OIDC_KEYCLOAK_ISSUER;
-  const intBase = process.env.OIDC_KEYCLOAK_ISSUER_INTERNAL ?? extBase;
-  providers.push({
-    id: "keycloak",
-    name: "Keycloak",
-    type: "oauth",
-    issuer: extBase,
-    clientId: process.env.OIDC_KEYCLOAK_CLIENT_ID,
-    clientSecret: process.env.OIDC_KEYCLOAK_CLIENT_SECRET ?? "",
-    authorization: {
-      url: `${extBase}/protocol/openid-connect/auth`,
-      params: { scope: "openid email profile" },
-    },
-    token: `${intBase}/protocol/openid-connect/token`,
-    userinfo: `${intBase}/protocol/openid-connect/userinfo`,
-    jwks_endpoint: `${intBase}/protocol/openid-connect/certs`,
-    checks: ["pkce", "state"],
-    profile(profile: Record<string, unknown>) {
-      return {
-        id: profile.sub as string,
-        name: (profile.name ?? profile.preferred_username) as string,
-        email: profile.email as string,
-      };
-    },
-  } as Parameters<typeof providers.push>[0]);
-}
-```
-
-同時將檔案頂端的 `import Keycloak from "next-auth/providers/keycloak";` 移除（不再使用 NextAuth 內建 provider）。
-
-**重 build 並 restart**：
+**確認**：`aiops-app/src/auth.ts` 應使用手動 `type: "oauth"` provider（不走 discovery），且設定了 `OIDC_KEYCLOAK_ISSUER_INTERNAL`。若 repo 版本正確，此問題不應發生。若 build 後仍有此問題，查看：
 ```powershell
-docker compose -f deploy/docker-compose.yml build aiops-app
-docker compose -f deploy/docker-compose.yml up -d --no-deps aiops-app
+docker logs deploy-aiops-app-1 --tail 30
 ```
 
-完成後再次點「使用 Keycloak 登入」即可正常導向 `http://localhost:8090/realms/aiops/...`。
+---
 
-**附加確認**：env 設定須維持下列分裂值（已在 4-B 節列出，這裡再次強調）：
-1. `OIDC_KEYCLOAK_ISSUER=http://localhost:8090/realms/aiops`（瀏覽器可存取）
-2. `OIDC_KEYCLOAK_ISSUER_INTERNAL=http://keycloak:8080/realms/aiops`（容器內部 DNS）
-3. Realm 名稱必須為 `aiops`
+### Q: AI Agent 對話無回應 / 401 或 403 錯誤
 
-> ⚠️ **首次以 Keycloak 登入時**，Keycloak 會跳「Update Account Information」要求填 First name / Last name（因為步驟五第 7 步建使用者時只給了 username/email）。填完一次後就不再出現。
+- **401**：Bearer Token 類型不正確。確認 `auth-proxy.ts` 優先使用 `idpAccessToken`（Keycloak JWT）。
+- **403**：JWT 中缺少 `roles` 欄位。確認 Keycloak 的 Protocol Mapper 已建立（`start-local.ps1` Phase 2 會自動處理）。
 
-### Q: AI Agent 對話無回應 / 出現 401 或 403 錯誤
-
-- **401**：Bearer Token 類型不正確。確認 `auth-proxy.ts` 優先使用 `idpAccessToken`（Keycloak JWT），而非 `javaJwt`。
-- **403**：JWT 中缺少 `roles` 欄位。確認步驟五第 6 步的 Protocol Mapper 有建立成功。
+---
 
 ### Q: AI Agent 回應 Anthropic 401 / 402 錯誤
 
@@ -1031,33 +1367,32 @@ docker compose -f deploy/docker-compose.yml up -d --no-deps aiops-app
 - **402 / 400**：Anthropic 帳戶餘額不足，請前往 [console.anthropic.com](https://console.anthropic.com) 加值。
 - 替代方案：改用本地 Ollama（見上方 LLM 選項切換章節）。
 
-### Q: postgres 容器健康但 Java 啟動後資料庫表格不存在
+---
 
-pgvector extension 未正確初始化，重新執行 init：
+### Q: postgres 容器健康但表格不存在
+
+pgvector extension 未正確初始化：
 ```powershell
 docker exec deploy-postgres-1 psql -U aiops -d aiops -c "CREATE EXTENSION IF NOT EXISTS vector;"
 docker restart deploy-aiops-java-api-1
 ```
 
+---
+
 ### Q: Port 已被佔用（address already in use）
 
-查看佔用的 Port 並關閉對應程式，或修改 `docker/docker-compose.yml` 中的 host port（左側數字）。  
-常見衝突：
-- 8080：各種本地服務 → Keycloak 已改為 8090
-
-### Q: Build 失敗 — npm ci 出現 peer dependency 錯誤
-
-React 19 peer dep 衝突，`deploy/docker/aiops-app/Dockerfile` 中已加入 `--legacy-peer-deps` 旗標，  
-若出現此問題請確認 Dockerfile 中有這行：
-```dockerfile
-RUN npm ci --legacy-peer-deps
-```
-
-### Q: Keycloak Realm 資料在重啟後消失
-
-Keycloak 使用 `keycloak_data` volume 儲存 H2 資料庫。如果 volume 被刪除（`docker compose down -v`），  
-Realm 設定也會一併清除。重建後請重新執行步驟五的 Keycloak 設定指令。
+查看佔用的 Port 並關閉對應程式，或修改 `deploy/docker-compose.yml` 中的 host port（左側數字）。
 
 ---
 
-*最後更新：2026-05-15（新增步驟五-B：Keycloak Split-Horizon OIDC 修補）*
+### Q: Keycloak Realm 資料在重啟後消失
+
+Keycloak 使用 `keycloak_data` volume。若 volume 被刪除（`docker compose down -v`），Realm 設定一併清除。重建後重新執行：
+```powershell
+.\deploy\start-local.ps1
+```
+腳本 Phase 2 會自動重建 realm（idempotent）。
+
+---
+
+*最後更新：2026-05-17（全面重寫：新增 start-local.ps1 / qa-local.ps1 / keycloak-setup.ps1 完整內容；新增步驟四 Source Code 補丁；重整為可從全新 clone 直接執行的自完備 SOP）*
